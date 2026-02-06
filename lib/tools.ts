@@ -15,21 +15,23 @@ export const calculatorTool = new Calculator();
 // 4. Time Tool
 export const timeTool = tool(
   async () => {
-    return new Date().toLocaleString("en-US", {
-      timeZone: "America/Los_Angeles",
+    return new Date().toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
       weekday: "long",
       year: "numeric",
       month: "long",
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      hour12: true,
     });
   },
   {
     name: "current_time",
-    description: "Returns the current date and time.",
+    description: "Returns the current date and time in Indian Standard Time (IST).",
     schema: z.object({}),
   }
 );
+
 
 export const tools = [searchTool, calculatorTool, timeTool];
