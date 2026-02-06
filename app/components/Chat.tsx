@@ -14,7 +14,7 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
-      text: "Hello! I'm your AI assistant. How can I help you today?",
+      text: "Hello! How can I help you today?",
       sender: 'assistant',
       timestamp: new Date(),
     }
@@ -83,7 +83,7 @@ export default function Chat() {
             <div className="w-6 h-6 rounded-md bg-gradient-to-br from-gray-800 to-black border border-gray-800 flex items-center justify-center">
               <Bot className="w-3.5 h-3.5 text-gray-400" />
             </div>
-            <h1 className="text-sm font-medium text-gray-300">AI Assistant</h1>
+            <h1 className="text-sm font-medium text-gray-300">ScribeNova</h1>
             <div className="ml-auto flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
               <span className="text-xs text-gray-500">Online</span>
