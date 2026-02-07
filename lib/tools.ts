@@ -3,6 +3,7 @@ import { Calculator } from "@langchain/community/tools/calculator";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
+
 // 1. Search Tool
 export const searchTool = new DuckDuckGoSearch({
   maxResults: 3,
@@ -33,5 +34,57 @@ export const timeTool = tool(
   }
 );
 
+// Pokemon Tool
+export const pokemonTool = tool(
+  async ({ name, field }) => {
+    const res = await fetch(
+      `https://pokeapi.co/api/v2/pokemon/${name.toLowerCase()}`
+    );
 
-export const tools = [searchTool, calculatorTool, timeTool];
+    if (!res.ok) {
+      return `Pokemon "${name}" not found`;
+    }
+
+    const data = await res.json();
+
+    // If user asked for specific field
+    if (field) {
+      switch (field) {
+        case "height":
+          return `${data.name} height is ${data.height}`;
+        case "weight":
+          return `${data.name} weight is ${data.weight}`;
+        case "type":
+          return data.types.map((t: any) => t.type.name);
+        case "ability":
+          return data.abilities.map((a: any) => a.ability.name);
+        case "image":
+          return data.sprites.front_default;
+        default:
+          return "Invalid field requested";
+      }
+    }
+
+    // Default response (basic info)
+    return {
+      name: data.name,
+      image: data.sprites.front_default,
+    };
+  },
+  {
+    name: "pokemon_info",
+    description:
+      "Get pokemon info. Default gives name and image. Use field for specific info like height, type, image.",
+    schema: z.object({
+      name: z.string().describe("Pokemon name like pikachu or charizard"),
+      field: z
+        .enum(["height", "weight", "type", "ability", "image"])
+        .optional()
+        .describe("Specific info user wants"),
+    }),
+  }
+);
+
+
+
+export const tools = [searchTool, calculatorTool, timeTool, pokemonTool];
