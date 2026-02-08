@@ -13,7 +13,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Run the agent
-    const response = await runAgent(message);
+    // const response = await runAgent(message);
+    const response = await runAgent(message, "default-user");
 
     return NextResponse.json({ response });
     

@@ -3,6 +3,7 @@ import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { tools } from "./tools";
 
+import { loadHistory, saveExchange } from "./memory";
 // const SYSTEM_PROMPT = `You are a helpful AI assistant. Use tools when available.
 // If tools are not available for this model, answer directly and concisely.`;
 const SYSTEM_PROMPT = `
@@ -32,9 +33,10 @@ export const llm = new ChatOllama({
 });
 
 
-export async function runAgent(input: string) {
+export async function runAgent(input: string, userId: string) {
   // 1. User Input Log
-  console.log("\n--- [LOG] User input received ---"); 
+  console.log(`\n--- [LOG] Running agent for user: ${userId} ---`); 
+  const history = await loadHistory(userId, llm);
 
   try {
     const agent = createReactAgent({
@@ -45,7 +47,7 @@ export async function runAgent(input: string) {
     });
 
     const stream = await agent.stream(
-      { messages: [{ role: "user", content: input }] },
+      { messages: [...history, { role: "user", content: input }] },
       { streamMode: "values" }
     );
 
@@ -75,6 +77,9 @@ export async function runAgent(input: string) {
         console.log(`--- [LOG] Tool [${lastMsg.name}] completed execution ---`);
       }
     }
+
+    // 3. Save the interaction back to memory
+    await saveExchange(userId, llm, input, finalContent);
 
     // 5. Final Output Log
     console.log("--- [LOG] Output generated successfully ---\n");
