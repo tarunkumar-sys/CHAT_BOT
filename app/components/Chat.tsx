@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -114,7 +115,32 @@ export default function Chat() {
                     ? 'bg-gray-900 text-gray-100 border border-gray-800'
                     : 'bg-gray-950 text-gray-300 border border-gray-900'
                 }`}>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</p>
+                  {message.sender === 'assistant' ? (
+                    <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none">
+                      <ReactMarkdown
+                        components={{
+                          a: ({ node, ...props }) => (
+                            <a
+                              {...props}
+                              className="text-blue-400 hover:text-blue-300 underline"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            />
+                          ),
+                          p: ({ node, ...props }) => <p {...props} className="mb-2 last:mb-0" />,
+                          ul: ({ node, ...props }) => <ul {...props} className="list-disc list-inside mb-2" />,
+                          ol: ({ node, ...props }) => <ol {...props} className="list-decimal list-inside mb-2" />,
+                          li: ({ node, ...props }) => <li {...props} className="mb-1" />,
+                          strong: ({ node, ...props }) => <strong {...props} className="font-semibold text-gray-200" />,
+                          code: ({ node, ...props }) => <code {...props} className="bg-gray-800 px-1 py-0.5 rounded text-xs" />,
+                        }}
+                      >
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</p>
+                  )}
                 </div>
                 <span className="text-xs text-gray-600 mt-1.5 block px-1">
                   {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

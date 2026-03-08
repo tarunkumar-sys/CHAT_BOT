@@ -1,6 +1,7 @@
 import { DuckDuckGoSearch } from "@langchain/community/tools/duckduckgo_search";
 import { Calculator } from "@langchain/community/tools/calculator";
 import { tool } from "@langchain/core/tools";
+import { websiteQATool } from './websiteTool';
 import { z } from "zod";
 
 
@@ -87,4 +88,4 @@ export const pokemonTool = tool(
 
 
 
-export const tools = [searchTool, calculatorTool, timeTool, pokemonTool];
+export const tools = [searchTool, calculatorTool, timeTool, pokemonTool, websiteQATool];
