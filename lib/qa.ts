@@ -4,12 +4,26 @@ import { ChatOllama } from '@langchain/ollama';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { RunnableSequence } from '@langchain/core/runnables';
-import { getQdrantClient } from './vectorstore';
+import { getQdrantClient, resolveWebsiteDomain } from './vectorstore';
 
 const COLLECTION_NAME = 'website_chunks';
 
-export async function getQaChain(websiteUrl: string) {
-  const domain = new URL(websiteUrl).hostname.replace(/\./g, '_');
+export async function getQaChain(websiteUrlOrName: string) {
+  // Resolve to stored domain (handles partial names + full URLs)
+  let domain: string;
+  try {
+    const resolved = await resolveWebsiteDomain(websiteUrlOrName);
+    if (resolved) {
+      domain = resolved;
+    } else {
+      domain = new URL(
+        websiteUrlOrName.startsWith('http') ? websiteUrlOrName : 'https://' + websiteUrlOrName
+      ).hostname.replace(/\./g, '_');
+    }
+  } catch {
+    domain = websiteUrlOrName.replace(/[\.\-\/\:]/g, '_').toLowerCase();
+  }
+
   const embeddings = new OllamaEmbeddings({
     model: 'nomic-embed-text',
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
@@ -22,7 +36,7 @@ export async function getQaChain(websiteUrl: string) {
   });
 
   const retriever = vectorStore.asRetriever({
-    k: 8, // Increased from 5 to 8 for more pages
+    k: 8,
     filter: {
       must: [{ key: 'metadata.domain', match: { value: domain } }],
     },
@@ -32,75 +46,52 @@ export async function getQaChain(websiteUrl: string) {
     model: process.env.OLLAMA_MODEL || 'qwen2.5:1.5b',
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
     temperature: 0,
-    numPredict: 300, // Limit output length for faster responses
+    numPredict: 600,
   });
 
-  const prompt = PromptTemplate.fromTemplate(`
-You are analyzing website content to provide clear, well-formatted answers.
+  const prompt = PromptTemplate.fromTemplate(`You are a website content analyst. Your job is to answer questions about website content using ONLY the provided context chunks. Format responses beautifully using markdown.
 
-FORMATTING RULES (CRITICAL):
-1. Use markdown with proper spacing
-2. Add blank lines between sections
-3. Format links: [Text](URL)
-4. Format emails: [email](mailto:email)
-5. Format phones: [phone](tel:phone)
-6. Use bullet points with proper spacing:
-   - Item 1
-   - Item 2
-   
-7. Use sections with spacing:
+STRICT FORMATTING RULES:
+1. ALWAYS start with a 1-sentence summary in plain text (no heading)
+2. Use **bold headers** for each section (e.g. **About**, **Services**, **Contact**)
+3. Put a blank line between every section
+4. Format ALL links as clickable markdown: [Link Text](https://full-url.com)
+5. Format ALL email addresses as: [email@domain.com](mailto:email@domain.com)
+6. Format ALL phone numbers as: [+91XXXXXXXXXX](tel:+91XXXXXXXXXX)
+7. Use bullet points (- item) for lists of items, skills, services, features
+8. Never output raw URLs like "https://..." — always wrap in [text](url)
+9. Keep the total response under 220 words
+10. If contact info exists, always end with a **Contact** section
 
-**Section Title**
-
-Content here
-
-**Next Section**
-
-Content here
-
-RESPONSE STRUCTURE:
-- Start with 1-2 sentence overview
-- Use clear sections with **bold headers**
-- Add blank line after each section
-- Use bullet points for lists
-- Keep total response under 200 words
-- Be concise and direct
-
-EXAMPLE FORMAT:
-
-This is a [portfolio website](https://example.com) for John Doe, a software engineer.
+SECTION STRUCTURE TO USE (only include sections that have data):
 
 **About**
+[2-3 sentence description]
 
-John specializes in web development and AI systems.
+**Services** (or **Products** / **Features** / **Skills** depending on site type)
+- Service one
+- Service two
 
-**Skills**
-
-- Python and JavaScript
-- Machine Learning
-- Web Development
+**Projects** (if portfolio site)
+- [Project Name](url-if-available) — brief description
 
 **Contact**
+[name@email.com](mailto:name@email.com) · [+91XXXXXXXXXX](tel:+91XXXXXXXXXX) · [Website](https://url)
 
-[john@example.com](mailto:john@example.com) | [LinkedIn](https://linkedin.com/in/john) | [+1234567890](tel:+1234567890)
-
-Context from website:
+CONTEXT FROM WEBSITE:
 {context}
 
-Question:
+USER QUESTION:
 {input}
 
-Answer (use exact format above with proper spacing):
-`);
+ANSWER (follow all formatting rules above, use exact markdown syntax):`);
 
-  // Create a chain that retrieves documents and answers questions
   const chain = RunnableSequence.from([
     {
       context: async (input: { input: string }) => {
         const docs = await retriever.invoke(input.input);
-        // Limit context to prevent timeout - max 2500 chars
         const context = docs.map(doc => doc.pageContent).join('\n\n');
-        return context.length > 2500 ? context.substring(0, 2500) + '...' : context;
+        return context.length > 3500 ? context.substring(0, 3500) + '...' : context;
       },
       input: (input: { input: string }) => input.input,
     },

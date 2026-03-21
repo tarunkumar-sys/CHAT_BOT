@@ -1,28 +1,33 @@
 @import "tailwindcss";
-/* Add this to your global CSS */
+
+/* Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #000;
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 3px;
+  background: #d6d0c8;
+  border-radius: 4px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: #b5afa6;
 }
 
-body {
-  background: #000;
+html, body {
+  background: #EDECEA;
+  height: 100%;
+  overflow: hidden;
 }
 
-/* Smooth transitions */
+/* Smooth color transitions */
 * {
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* Remove default focus outlines for mouse, keep for keyboard */
+:focus:not(:focus-visible) {
+  outline: none;
 }

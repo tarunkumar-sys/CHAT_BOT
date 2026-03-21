@@ -1,1058 +1,804 @@
-# ScribeNova AI Agent System - Complete Documentation
+# ScribeNova — Technical Reference
+
+This document is the deep-dive companion to [README.md](./README.md). It covers internal architecture, data flows, component contracts, Qdrant schema, and extension points.
+
+---
 
 ## Table of Contents
-1. [System Overview](#system-overview)
-2. [Architecture](#architecture)
-3. [Features](#features)
-4. [Setup Guide](#setup-guide)
-5. [Vector Memory System](#vector-memory-system)
-6. [Performance Optimizations](#performance-optimizations)
-7. [Component Details](#component-details)
-8. [Usage Examples](#usage-examples)
-9. [API Reference](#api-reference)
-10. [Configuration](#configuration)
-11. [Troubleshooting](#troubleshooting)
-12. [Deployment](#deployment)
+
+1. [System Overview](#1-system-overview)
+2. [Data Flow — End to End](#2-data-flow--end-to-end)
+3. [Qdrant Collections Schema](#3-qdrant-collections-schema)
+4. [lib/agent.ts](#4-libagentts)
+5. [lib/vectorMemory.ts](#5-libvectormemoryts)
+6. [lib/customMemory.ts](#6-libcustommemoryts)
+7. [lib/vectorstore.ts](#7-libvectorstorets)
+8. [lib/qa.ts](#8-libqats)
+9. [lib/websiteTool.ts](#9-libwebsitetoolts)
+10. [lib/crawler.ts](#10-libcrawlerts)
+11. [lib/chunker.ts](#11-libchunkerts)
+12. [lib/tools.ts](#12-libtoolsts)
+13. [API Routes](#13-api-routes)
+14. [KiroMascot — Canvas Rendering System](#14-kiromascot--canvas-rendering-system)
+15. [Chat.tsx — UI State Machine](#15-chattsx--ui-state-machine)
+16. [Performance Characteristics](#16-performance-characteristics)
+17. [Extension Points](#17-extension-points)
+18. [Environment Variables Reference](#18-environment-variables-reference)
 
 ---
 
-## System Overview
+## 1. System Overview
 
-**ScribeNova** is an intelligent AI agent system with persistent vector memory, multi-tool support, and optimized performance for production use.
+ScribeNova is a **fully local** AI chat application. No data leaves the machine. All inference runs through Ollama, all vector storage runs through Qdrant, and all web scraping runs through a local Playwright Chromium instance.
 
-### Key Technologies
-- **Frontend**: Next.js 16.1.6, React 19, TailwindCSS 4, React Markdown
-- **Backend**: Next.js API Routes
-- **AI Framework**: LangChain, LangGraph
-- **LLM**: Ollama (qwen2.5:1.5b)
-- **Vector Store**: Qdrant (websites + memory)
-- **Web Scraping**: Playwright (optimized)
-- **Memory**: Vector-based persistent memory
+### Core Subsystems
 
-### Key Features
-✅ Persistent conversation memory using vector embeddings  
-✅ Website Q&A with automatic crawling and indexing  
-✅ Markdown rendering with clickable links  
-✅ Semantic search for relevant conversation history  
-✅ Deduplication to avoid saving redundant data  
-✅ Performance optimizations (reduced context, blocked resources)  
-✅ Prompt leakage detection and cleaning  
+| Subsystem | Responsibility |
+|---|---|
+| Agent | Orchestrates LLM + tool calls via LangGraph ReAct |
+| Vector Memory | Persists and retrieves conversation history |
+| Custom Memory | Stores user-provided personal facts |
+| Website Q&A | Crawls, indexes, and answers questions about websites |
+| KiroMascot | Canvas-rendered animated avatar driven by chat state |
+| Settings Modal | UI for persona, memory, and website management |
 
----
+### Runtime Dependencies
 
-## Architecture
-
-### System Flow
 ```
-User Query
-    ↓
-1. Vector Memory Retrieval
-   - Semantic search (2 relevant conversations)
-   - Recent history (3 conversations)
-   - Deduplication
-    ↓
-2. Agent Processing
-   - Tool selection
-   - LLM generation
-   - Response formatting
-    ↓
-3. Response Delivery
-   - Markdown rendering
-   - Clickable links
-    ↓
-4. Memory Storage
-   - Deduplication check (95% threshold)
-   - Vector embedding
-   - Qdrant storage
-```
-
-### Directory Structure
-```
-scribe-nova/
-├── app/
-│   ├── api/agent/
-│   │   └── route.ts           # API endpoint
-│   ├── components/
-│   │   └── Chat.tsx           # Chat UI with markdown
-│   ├── page.tsx               # Home page
-│   └── layout.tsx             # Root layout
-├── lib/
-│   ├── agent.ts               # Agent with optimizations
-│   ├── vectorMemory.ts        # Vector-based memory
-│   ├── tools.ts               # Tool definitions
-│   ├── crawler.ts             # Optimized crawler
-│   ├── chunker.ts             # Text chunking
-│   ├── vectorstore.ts         # Qdrant integration
-│   ├── qa.ts                  # Optimized Q&A chain
-│   └── websiteTool.ts         # Website Q&A tool
-├── .env.local                 # Environment variables
-├── SYSTEM.md                  # This file
-└── README.md                  # Quick start guide
+Ollama  (port 11434)  — LLM inference + embeddings
+Qdrant  (port 6333)   — vector storage (3 collections)
+Playwright Chromium   — headless browser for crawling
 ```
 
 ---
 
-## Features
+## 2. Data Flow — End to End
 
-### 1. Vector Memory System
+### Chat Message Flow
 
-**Persistent Storage:**
-- Conversations stored in Qdrant vector database
-- Survives server restarts
-- Unlimited history capacity
+```
+1. User types message → Chat.tsx handleSubmit()
+   ├── setIsLoading(true)
+   ├── startLoadingCycle()  → KiroMascot expression: loading → think → surprise
+   └── POST /api/agent { message, botName, botDescription }
 
-**Semantic Search:**
-- Finds relevant past conversations by meaning
-- Uses nomic-embed-text embeddings (768 dimensions)
-- Cosine similarity matching
+2. /api/agent → runAgent(message, userId, botName, botDescription)
+   │
+   ├── 2a. Memory retrieval
+   │     ├── VectorMemory.getRelevantHistory(userId, query, 2)
+   │     │     └── embed query → Qdrant cosine search → top 2 results
+   │     ├── VectorMemory.getRecentHistory(userId, 3)
+   │     │     └── Qdrant scroll ordered by timestamp → top 3
+   │     └── deduplicate + slice(0, 3) → historyContext string
+   │
+   ├── 2b. Custom memory retrieval
+   │     └── CustomMemory.getRelevantFacts(userId, query, 5)
+   │           └── embed query → Qdrant cosine search (threshold 0.4) → top 5
+   │
+   ├── 2c. Build system messages
+   │     ├── buildSystemPrompt(botName, botDescription)
+   │     ├── system message: factsContext + historyContext
+   │     └── user message: input
+   │
+   ├── 2d. createReactAgent(llm, tools, systemPrompt)
+   │     └── stream({ messages })
+   │           ├── AIMessage with tool_calls → log tool name
+   │           ├── ToolMessage → log completion
+   │           └── AIMessage without tool_calls → finalContent
+   │
+   ├── 2e. Validate + clean response
+   │     ├── containsPromptLeakage() check
+   │     └── cleanResponse() if needed
+   │
+   └── 2f. Save to vector memory
+         └── VectorMemory.saveConversation(userId, input, finalContent)
+               ├── embed combined text
+               ├── search for 95% similar existing entry
+               └── upsert if unique
 
-**Hybrid Retrieval:**
-- Top 2 semantically similar conversations
-- Plus 3 most recent conversations
-- Deduplicates and keeps top 3
+3. Response → Chat.tsx
+   ├── stopLoadingCycle()
+   ├── setKiroExpr('happy') → 2s → 'idle'
+   └── append assistant message to messages[]
+         └── KiroMascot: previous latest → 'sleep', new latest → 'idle'
+```
 
-**Deduplication:**
-- Checks for 95% similarity before saving
-- Avoids storing redundant conversations
-- Reduces storage and improves relevance
+### Website Indexing Flow
 
-**Metadata:**
+```
+POST /api/website { url }
+  │
+  ├── Validate URL format
+  ├── websiteExists(url) → resolveWebsiteDomain(url) → Qdrant scroll
+  │     └── if exists: return { cached: true }
+  │
+  ├── crawlWebsite(url, { maxPages: 15 })
+  │     ├── Playwright chromium.launch()
+  │     ├── Block: images, scripts, fonts, stylesheets, analytics
+  │     ├── BFS queue starting from startUrl
+  │     ├── Per page: goto → scroll → extract text + links
+  │     ├── MD5 dedup on content hash
+  │     └── Return string[] of page text
+  │
+  ├── chunkText(pages)
+  │     └── RecursiveCharacterTextSplitter(400, 50) → string[]
+  │
+  └── createVectorstore(chunks, url)
+        ├── Extract domain: hostname.replace(/\./g, '_')
+        ├── Ensure collection exists
+        ├── OllamaEmbeddings.embedDocuments(chunks)
+        └── QdrantVectorStore.fromTexts(chunks, metadatas)
+              metadata per chunk: { source: url, domain: domain }
+```
+
+---
+
+## 3. Qdrant Collections Schema
+
+### `conversation_memory`
+
+Stores embedded conversation turns.
+
 ```typescript
 {
-  userId: "default-user",
-  userMessage: "What is on example.com?",
-  assistantMessage: "Example.com is...",
-  timestamp: 1234567890,
-  sessionId: "default-session",
-  date: "2026-03-08T12:00:00.000Z"
+  id: string,           // UUID v4
+  vector: number[],     // 768-dim nomic-embed-text embedding
+                        // of "User: {msg}\nAssistant: {reply}"
+  payload: {
+    userId: string,
+    userMessage: string,
+    assistantMessage: string,
+    timestamp: number,  // Unix ms
+    sessionId: string,
+    date: string,       // ISO 8601
+  }
 }
 ```
 
-### 2. Website Q&A Tool
+Filters used: `userId`, `sessionId`
+Distance: Cosine
 
-**Features:**
-- Automatic website crawling with Playwright
-- Content indexing in Qdrant
-- RAG-based question answering
-- Caching for instant subsequent queries
-- Markdown formatting with clickable links
+### `user_custom_memory`
 
-**Optimizations:**
-- Blocks images, scripts, stylesheets, fonts
-- Blocks tracking and analytics
-- Crawls up to 15 pages per website (configurable)
-- Retrieves 8 chunks for better coverage
-- Limits context to 2500 chars
-- Fast page loading (domcontentloaded instead of networkidle)
-- Quick scrolling (100ms intervals, 800px steps)
+Stores user-provided personal facts.
 
-**Example Response:**
-```markdown
-This is a [portfolio website](https://example.com) for John Doe.
-
-**About**
-
-John specializes in web development and AI systems.
-
-**Skills**
-
-- Python and JavaScript
-- Machine Learning
-- Web Development
-
-**Contact**
-
-[email@example.com](mailto:email@example.com) | [LinkedIn](https://linkedin.com/profile) | [+1234567890](tel:+1234567890)
+```typescript
+{
+  id: string,           // UUID v4
+  vector: number[],     // 768-dim embedding of fact text
+  payload: {
+    userId: string,
+    text: string,       // the raw fact
+    createdAt: string,  // ISO 8601
+  }
+}
 ```
 
-**Formatting Features:**
-- Proper spacing between sections (blank lines)
-- Bold headers with `**Header**`
-- Clickable links: `[text](url)`
-- Clickable emails: `[email](mailto:email)`
-- Clickable phones: `[phone](tel:phone)`
-- Bullet points with proper spacing
-- Concise responses (under 200 words)
-- Limited to 300 tokens for faster generation
+Filters used: `userId`
+Distance: Cosine
+Score threshold for retrieval: 0.4
 
-### 3. Multi-Tool Support
+### `website_chunks`
 
-#### Web Search (DuckDuckGo)
-- Real-time web search
-- Top 3 results
-- Current events and news
+Stores chunked website content.
 
-#### Calculator
-- Mathematical calculations
-- Complex expressions
-- Arithmetic operations
+```typescript
+{
+  id: string,           // UUID v4 (auto-generated by QdrantVectorStore)
+  vector: number[],     // 768-dim embedding of chunk text
+  payload: {
+    metadata: {
+      source: string,   // full URL e.g. "https://example.com/about"
+      domain: string,   // normalized e.g. "example_com"
+    },
+    content: string,    // chunk text
+  }
+}
+```
 
-#### Current Time
-- Date and time in IST
-- Formatted output
-
-#### Pokemon Info
-- PokeAPI integration
-- Height, weight, type, abilities
-- Images
-
-### 4. Modern Chat Interface
-
-**Features:**
-- Dark-themed UI
-- Markdown rendering with React Markdown
-- Clickable links (emails, URLs, phone numbers)
-- Message history with timestamps
-- Loading indicators
-- Quick suggestion buttons
-
-**Link Styling:**
-- Blue color (`text-blue-400`)
-- Underline
-- Opens in new tab
-- Hover effects
+Filters used: `metadata.domain`
+Distance: Cosine
+Chunks per query: k=8
 
 ---
 
-## Setup Guide
+## 4. lib/agent.ts
 
-### Prerequisites
+**Exports:** `runAgent(input, userId, botName, botDescription)`, `llm`
 
-1. **Node.js** 20+
-2. **Ollama** with models:
-   - qwen2.5:1.5b (LLM)
-   - nomic-embed-text (embeddings)
-3. **Qdrant** vector database
-4. **Playwright** browsers
+### `buildSystemPrompt(botName, botDescription)`
 
-### Installation Steps
+Constructs the agent's system prompt dynamically. The bot name and description come from the user's Settings panel and are passed through the API route on every request.
 
-#### 1. Clone and Install
-```bash
-git clone <your-repo-url>
-cd scribe-nova
-npm install
+### `runAgent(input, userId, botName, botDescription)`
+
+Main orchestration function. Steps:
+
+1. Retrieve hybrid memory (semantic + recent, deduplicated, max 3)
+2. Retrieve relevant custom facts (semantic, max 5, threshold 0.4)
+3. Build context string: facts first, then history
+4. Create ReAct agent with `createReactAgent({ llm, tools, messageModifier })`
+5. Stream agent execution, capture final `AIMessage` content
+6. Run prompt leakage detection + cleaning
+7. Save conversation to vector memory (non-blocking, errors swallowed)
+
+### Prompt Leakage Detection
+
+Patterns checked: `You are a`, `CRITICAL RULES`, `Core Principles:`, `Tool Usage Guidelines:`, `Available Tools:`, `[LOG]`
+
+If detected, `cleanResponse()` strips the leaked fragments with regex replacements.
+
+### LLM Settings
+
+```typescript
+model: process.env.OLLAMA_MODEL || 'qwen2.5:1.5b'
+temperature: 0
+numPredict: 400
 ```
-
-#### 2. Install Ollama
-```bash
-# Download from https://ollama.ai
-
-# Pull models
-ollama pull qwen2.5:1.5b
-ollama pull nomic-embed-text
-
-# Verify
-ollama list
-```
-
-#### 3. Start Qdrant
-```bash
-# Using Docker (recommended)
-docker run -p 6333:6333 -d qdrant/qdrant
-
-# Verify
-curl http://localhost:6333
-```
-
-#### 4. Install Playwright
-```bash
-npx playwright install chromium
-```
-
-#### 5. Configure Environment
-Create `.env.local`:
-```env
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:1.5b
-QDRANT_URL=http://localhost:6333
-```
-
-#### 6. Start Development Server
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## Vector Memory System
+## 5. lib/vectorMemory.ts
 
-### How It Works
+**Class:** `VectorMemory` (singleton via `getVectorMemory()`)
 
+**Collection:** `conversation_memory`
+**Embedding model:** `nomic-embed-text` (768d)
+
+### Key Methods
+
+#### `saveConversation(userId, userMessage, assistantMessage, sessionId?)`
+
+1. Calls `initialize()` to ensure collection exists
+2. Embeds `"User: {msg}\nAssistant: {reply}"`
+3. Searches for existing entry with score ≥ 0.95
+4. If duplicate found: skips save, logs
+5. If unique: upserts with full metadata payload
+
+#### `getRelevantHistory(userId, currentQuery, limit, sessionId?)`
+
+Embeds `currentQuery`, runs cosine search filtered by `userId` + `sessionId`, returns top `limit` results as `ConversationTurn[]`.
+
+#### `getRecentHistory(userId, limit, sessionId?)`
+
+Scrolls collection filtered by `userId` + `sessionId`, orders by `timestamp` descending, returns top `limit`.
+
+#### `formatHistoryForContext(conversations, currentQuery?)`
+
+Returns a formatted string:
 ```
-1. User sends message
-2. Generate embedding for query
-3. Search Qdrant for similar conversations
-4. Retrieve top 2 relevant + 3 recent
-5. Format as context for LLM
-6. LLM generates response
-7. Check for duplicates (95% threshold)
-8. Save to Qdrant if unique
+Previous conversation context:
+User: ...
+Assistant: ...
+
+User: ...
+Assistant: ...
 ```
 
-### API Methods
+Skips entries where `userMessage === currentQuery` to avoid redundancy.
 
-#### `saveConversation()`
+---
+
+## 6. lib/customMemory.ts
+
+**Class:** `CustomMemory` (singleton via `getCustomMemory()`)
+
+**Collection:** `user_custom_memory`
+**Embedding model:** `nomic-embed-text` (768d)
+
+### Key Methods
+
+| Method | Description |
+|---|---|
+| `addFact(userId, text)` | Embeds text, upserts to Qdrant, returns `MemoryFact` |
+| `deleteFact(userId, factId)` | Deletes point by ID |
+| `listFacts(userId)` | Scrolls all facts for user, sorted by `createdAt` desc |
+| `getRelevantFacts(userId, query, limit)` | Semantic search with score threshold 0.4 |
+| `formatFactsForContext(facts)` | Returns `"Known facts about the user:\n- fact1\n- fact2"` |
+
+### MemoryFact Type
+
 ```typescript
-await vectorMemory.saveConversation(
-  userId: string,
-  userMessage: string,
-  assistantMessage: string,
-  sessionId?: string
+interface MemoryFact {
+  id: string;
+  text: string;
+  userId: string;
+  createdAt: string; // ISO 8601
+}
+```
+
+---
+
+## 7. lib/vectorstore.ts
+
+**Exports:** `getQdrantClient`, `createVectorstore`, `websiteExists`, `resolveWebsiteDomain`
+
+### `resolveWebsiteDomain(nameOrUrl)`
+
+The fuzzy domain resolver. Enables partial name matching for indexed websites.
+
+**Algorithm:**
+1. Scroll all points in `website_chunks` (limit 200), collect unique `metadata.domain` values
+2. Normalize input: lowercase, strip protocol/www/path, replace `.` and `-` with `_`
+3. Try exact match
+4. Try partial/contains match (`d.includes(needle) || needle.includes(d)`)
+5. Try token match: split both on `_`, check if any token with length > 2 appears in domain tokens
+6. Return matched domain string or `null`
+
+**Example:**
+```
+Input: "iotsolvez"
+Stored domain: "iotsolvez_vercel_app"
+Step 3: no exact match
+Step 4: "iotsolvez_vercel_app".includes("iotsolvez") → true → return "iotsolvez_vercel_app"
+```
+
+### `websiteExists(websiteUrl)`
+
+Delegates to `resolveWebsiteDomain(websiteUrl)`, returns `domain !== null`.
+
+### `createVectorstore(chunks, websiteUrl)`
+
+1. Extracts domain: `new URL(websiteUrl).hostname.replace(/\./g, '_')`
+2. Ensures `website_chunks` collection exists (768d, Cosine)
+3. Builds metadata array: `{ source: websiteUrl, domain }`
+4. Calls `QdrantVectorStore.fromTexts(chunks, metadatas, embeddings, { client, collectionName })`
+
+---
+
+## 8. lib/qa.ts
+
+**Export:** `getQaChain(websiteUrlOrName)`
+
+### Domain Resolution
+
+```typescript
+const resolved = await resolveWebsiteDomain(websiteUrlOrName);
+if (resolved) {
+  domain = resolved;
+} else {
+  domain = new URL(...).hostname.replace(/\./g, '_');
+}
+```
+
+This means `getQaChain` accepts full URLs, partial names, or already-normalized domain strings.
+
+### Retriever
+
+```typescript
+vectorStore.asRetriever({
+  k: 8,
+  filter: { must: [{ key: 'metadata.domain', match: { value: domain } }] }
+})
+```
+
+### LLM Settings
+
+```typescript
+model: process.env.OLLAMA_MODEL || 'qwen2.5:1.5b'
+temperature: 0
+numPredict: 600
+```
+
+### Prompt Structure
+
+The prompt enforces strict markdown output:
+- 1-sentence plain-text summary (no heading)
+- `**Bold**` section headers with blank lines between sections
+- All links as `[text](url)`, emails as `[e@d.com](mailto:...)`, phones as `[+91...](tel:...)`
+- Bullet lists for services/skills/features
+- Max 220 words
+- Mandatory `**Contact**` section if contact data exists
+
+### Context Limiting
+
+```typescript
+context.length > 3500 ? context.substring(0, 3500) + '...' : context
+```
+
+---
+
+## 9. lib/websiteTool.ts
+
+**Export:** `websiteQATool` (LangChain `tool()`)
+
+**Tool name:** `website_qa`
+
+### Handler Logic
+
+```typescript
+1. resolveWebsiteDomain(website)  → check if already indexed by partial name
+2. if resolvedDomain === null:
+     crawlWebsite(fullUrl, { maxPages: 15 })
+     chunkText(pages)
+     createVectorstore(chunks, fullUrl)
+3. getQaChain(resolvedDomain ?? fullUrl)
+4. chain.invoke({ input: question })
+5. return result.answer
+```
+
+The key insight: `resolveWebsiteDomain` is called before `websiteExists` so that partial names (e.g. "iotsolvez") correctly skip re-crawling even when the full URL wasn't provided.
+
+---
+
+## 10. lib/crawler.ts
+
+**Export:** `crawlWebsite(startUrl, options)`
+
+### Algorithm
+
+BFS crawl restricted to the same hostname as `startUrl`.
+
+```
+queue = [startUrl]
+visited = Set<string>
+contentHashes = Set<string>  // MD5 dedup
+
+while queue.length > 0 and pages.length < maxPages:
+  url = queue.shift()
+  if visited.has(url): continue
+  visited.add(url)
+
+  page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  scroll page (800px steps, 100ms intervals, max 3s)
+  wait for DOM stability (3s timeout)
+
+  text = page.evaluate() → extract innerText, filter noise
+  hash = MD5(text)
+  if contentHashes.has(hash): continue  // duplicate content
+  contentHashes.add(hash)
+  pages.push(text)
+
+  links = page.$$eval('a[href]') → filter same-domain, normalize
+  queue.push(...newLinks)
+```
+
+### Resource Blocking
+
+All of the following are aborted before download:
+- Resource types: `image`, `media`, `font`, `stylesheet`, `script`, `other`
+- URL patterns: `analytics`, `tracking`, `ads`, `facebook`, `twitter`, `google-analytics`, `doubleclick`, `.css`, `.jpg`, `.png`, `.gif`, `.svg`, `.woff`, `.ttf`
+
+Result: ~70% reduction in page load time.
+
+---
+
+## 11. lib/chunker.ts
+
+**Export:** `chunkText(pages)`
+
+Uses `RecursiveCharacterTextSplitter` from `@langchain/textsplitters`:
+
+```typescript
+chunkSize: 400
+chunkOverlap: 50
+```
+
+Input: `string[]` (one string per crawled page)
+Output: `string[]` (flat array of chunks)
+
+---
+
+## 12. lib/tools.ts
+
+**Export:** `tools` array
+
+| Tool | Name | Source |
+|---|---|---|
+| `searchTool` | `duckduckgo_search` | `@langchain/community/tools/duckduckgo_search` |
+| `calculatorTool` | `calculator` | `@langchain/community/tools/calculator` |
+| `timeTool` | `current_time` | custom `tool()` — IST locale string |
+| `pokemonTool` | `pokemon_info` | custom `tool()` — PokeAPI |
+| `websiteQATool` | `website_qa` | `lib/websiteTool.ts` |
+
+### pokemonTool Schema
+
+```typescript
+z.object({
+  name: z.string(),
+  field: z.enum(['height', 'weight', 'type', 'ability', 'image']).optional()
+})
+```
+
+---
+
+## 13. API Routes
+
+### `POST /api/agent`
+
+Accepts `{ message, botName?, botDescription? }`. Calls `runAgent`. Returns `{ response }`.
+
+### `GET /api/memory` · `POST /api/memory` · `DELETE /api/memory`
+
+CRUD for `user_custom_memory` collection via `CustomMemory` class.
+
+- GET: `?userId=default-user` → `{ facts: MemoryFact[] }`
+- POST: `{ fact, userId }` → `{ fact: MemoryFact }`
+- DELETE: `{ factId, userId }` → `{ success: true }`
+
+### `POST /api/website`
+
+Crawl and index a URL. Checks `websiteExists` first (returns `{ cached: true }` if already indexed). Returns `{ success, pages, chunks, url }`.
+
+### `GET /api/websites` · `DELETE /api/websites`
+
+Manage indexed websites.
+
+- GET: Scrolls `website_chunks`, groups by `metadata.domain`, returns `{ sites: [{ domain, url, chunks }] }`
+- DELETE: `{ domain }` → deletes all points matching `metadata.domain` filter
+
+---
+
+## 14. KiroMascot — Canvas Rendering System
+
+**File:** `app/components/KiroMascot.tsx`
+
+**Exports:** `default KiroMascot`, `KiroAvatar` (thin wrapper), `KiroExpression` type
+
+### Expression Type
+
+```typescript
+type KiroExpression = 'idle' | 'happy' | 'think' | 'surprise' | 'loading' | 'sleep'
+```
+
+### Animation State (`AnimState`)
+
+All animation state lives in a single `useRef` object — no `useState`, no re-renders from the animation loop.
+
+```typescript
+{
+  t: number,          // frame counter
+  y: number,          // vertical float offset (px)
+  vy: number,         // vertical velocity (bounce physics)
+  sx: number,         // horizontal scale (squash/stretch)
+  sy: number,         // vertical scale
+  tx: number,         // head turn X (smoothed, -1 to 1)
+  ty: number,         // head tilt Y (smoothed)
+  txT: number,        // head turn target
+  tyT: number,        // head tilt target
+  lx: number,         // eye look X (smoothed)
+  ly: number,         // eye look Y (smoothed)
+  lxT: number,        // eye look X target
+  lyT: number,        // eye look Y target
+  blink: number,      // 0=open, 1=closed (smoothed)
+  blinkT: number,     // blink target
+  spinAngle: number,  // for loading orbiting eyes
+}
+```
+
+### Render Pipeline (per frame)
+
+```
+1. clearRect
+2. Ground shadow — squashed ellipse, opacity fades with float height
+3. Sphere body
+   ├── Clip to circle
+   ├── Radial gradient (white center → gray edge)
+   ├── Ambient occlusion overlay
+   ├── Border stroke
+   └── Specular highlights (two ellipses, rotated)
+4. Eyes (per eye, with 3D perspective projection)
+   ├── pX = faceX * cos(tx * 0.42)
+   ├── pZ = faceX * sin(tx * 0.42)
+   ├── depth = 1 + pZ * 0.52
+   ├── skip if pZ < -0.42 (behind head)
+   └── draw based on expression:
+       idle/default → black circle + dual shine dots
+       happy        → arc stroke (upturned) + blush ellipses
+       think left   → squinted horizontal ellipse
+       surprise     → large circle + iris ring + two shines
+       loading      → orbiting dot (opposite phase per eye)
+       sleep        → downward arc stroke (closed eye)
+5. Sleep Z's — two floating 'z' characters with opacity pulse
+```
+
+### Physics
+
+**Bounce:** `vy += R * 0.006` (gravity), `vy *= 0.30` on ground impact. Squash on impact: `sx = 1 + sq * 1.3`, `sy = 1 - sq`. Recovery via lerp toward 1.
+
+**Float patterns:**
+- `idle`/`think`: dual-sine `sin(t*0.022)*R*0.14 + sin(t*0.017)*R*0.04`
+- `happy`: single-sine `sin(t*0.022)*R*0.08`
+- `loading`: `sin(t*0.05)*R*0.09` + head sway
+- `sleep`: very slow `sin(t*0.012)*R*0.06`
+
+**Smoothing:** `lerp(a, b, t)` — head turn 0.075, eye look 0.12, blink 0.22
+
+### Auto-Blink & Auto-Glance (idle only)
+
+Both use `setTimeout` chains (not RAF) to avoid coupling to frame rate.
+
+- Blink: fires every 1500–4000ms, sets `blinkT=1` for 115ms then resets
+- Glance: fires every 2500–5500ms, sets random `txT/tyT/lxT/lyT`, resets after 500–1100ms
+
+Both are cleaned up in `useEffect` return to prevent setState on unmounted component.
+
+### HiDPI Support
+
+```typescript
+const dpr = Math.min(window.devicePixelRatio || 1, 2)
+canvas.width  = size * dpr
+canvas.height = size * dpr
+canvas.style.width  = size + 'px'
+canvas.style.height = size + 'px'
+ctx.scale(dpr, dpr)
+```
+
+---
+
+## 15. Chat.tsx — UI State Machine
+
+### Component Hierarchy
+
+```
+Chat()
+├── SettingsModal (portal-style fixed overlay)
+│   ├── Tab: General  → bot name + description
+│   ├── Tab: Memory   → custom facts CRUD
+│   └── Tab: Website  → crawl input + indexed sites list
+├── Sidebar (collapsible icon rail)
+├── Header (bot name + Customize button)
+├── Chat area
+│   ├── Landing state (no messages)
+│   │   └── LandingInput + suggestion chips
+│   └── Messages state
+│       ├── messages.map() → message bubbles
+│       │   ├── User: stone-900 bubble, right-aligned
+│       │   └── Assistant: white bubble + KiroAvatar
+│       │       ├── latest assistant msg → expression='idle'
+│       │       └── past assistant msgs  → expression='sleep'
+│       └── isLoading → typing bubble + KiroAvatar(loadingExpr)
+└── ChatInput (bottom bar, shown when messages exist)
+```
+
+### Key State
+
+| State | Type | Purpose |
+|---|---|---|
+| `messages` | `Message[]` | Full conversation history |
+| `isLoading` | `boolean` | Fetch in progress |
+| `kiroExpr` | `KiroExpression` | Post-response expression (happy → idle) |
+| `loadingExpr` | `KiroExpression` | Cycles during loading |
+| `loadingTimersRef` | `Ref<Timeout[]>` | Timer handles for cycle cleanup |
+| `botConfig` | `BotConfig` | Name + description from Settings |
+| `sidebarOpen` | `boolean` | Sidebar visibility |
+| `settingsOpen` | `boolean` | Settings modal visibility |
+
+### Loading Expression Cycle
+
+```
+startLoadingCycle():
+  t=0ms  → setLoadingExpr('loading')
+  t=4s   → setLoadingExpr('think')
+  t=8s   → setLoadingExpr('surprise')
+  t=14s  → setLoadingExpr('loading')
+
+stopLoadingCycle():
+  clearTimeout all 3 timers
+```
+
+Called: `startLoadingCycle()` before fetch, `stopLoadingCycle()` in try and catch blocks.
+
+### Sleep Expression Logic
+
+In `messages.map()`:
+
+```typescript
+const isLatestAssistant =
+  messages.filter(m => m.sender === 'assistant').at(-1)?.id === message.id
+
+// latest → idle (alive), past → sleep (resting)
+expression = isLatestAssistant ? 'idle' : 'sleep'
+```
+
+This recalculates on every render, so when a new message arrives the previous "latest" automatically transitions to sleep.
+
+---
+
+## 16. Performance Characteristics
+
+### Response Times (approximate, local hardware)
+
+| Operation | First time | Cached |
+|---|---|---|
+| Simple chat (no tools) | 3–8s | 3–8s |
+| Web search | 5–12s | — |
+| Website Q&A (small site, 5 pages) | 20–40s | 5–10s |
+| Website Q&A (large site, 15 pages) | 45–90s | 5–10s |
+| Custom memory retrieval | +0.5–1s | — |
+
+### Memory Usage
+
+| Component | Approximate |
+|---|---|
+| Ollama (qwen2.5:1.5b) | ~1.5 GB RAM |
+| Qdrant (Docker) | ~200 MB base |
+| Playwright Chromium | ~300 MB during crawl |
+| Next.js dev server | ~200 MB |
+
+### Qdrant Collection Sizes
+
+| Collection | Typical size |
+|---|---|
+| `conversation_memory` | ~2 KB per turn |
+| `user_custom_memory` | ~1 KB per fact |
+| `website_chunks` | ~5–50 KB per site (varies) |
+
+---
+
+## 17. Extension Points
+
+### Adding a New Tool
+
+1. Define in `lib/tools.ts` using `tool()` from `@langchain/core/tools`
+2. Add to the `tools` array export
+3. Add a description line in `buildSystemPrompt()` in `lib/agent.ts`
+
+```typescript
+// lib/tools.ts
+export const weatherTool = tool(
+  async ({ city }: { city: string }) => {
+    // fetch weather data
+    return `Weather in ${city}: ...`;
+  },
+  {
+    name: 'weather',
+    description: 'Get current weather for a city',
+    schema: z.object({ city: z.string() }),
+  }
 );
+
+export const tools = [...existingTools, weatherTool];
 ```
 
-**Features:**
-- Generates embedding
-- Checks for duplicates (95% similarity)
-- Saves to Qdrant with metadata
-- Logs save status
+### Adding a New KiroMascot Expression
 
-#### `getRelevantHistory()`
-```typescript
-const history = await vectorMemory.getRelevantHistory(
-  userId: string,
-  currentQuery: string,
-  limit: number = 2,
-  sessionId?: string
-);
-```
+1. Add the string literal to `KiroExpression` type in `KiroMascot.tsx`
+2. Add a case in `applyExpression()` to set targets
+3. Add a rendering branch in the eye drawing section
+4. Optionally add a float pattern in the update loop
 
-**Returns:** Semantically similar conversations
+### Adding a New Settings Tab
 
-#### `getRecentHistory()`
-```typescript
-const history = await vectorMemory.getRecentHistory(
-  userId: string,
-  limit: number = 3,
-  sessionId?: string
-);
-```
+1. Add tab id to the `tabs` array in `SettingsModal`
+2. Add corresponding state variables
+3. Add JSX block `{tab === 'your-tab' && (...)}`
+4. Create API route if backend storage is needed
 
-**Returns:** Most recent conversations (time-based)
+### Switching to a Different Embedding Model
 
-#### `formatHistoryForContext()`
-```typescript
-const formatted = vectorMemory.formatHistoryForContext(
-  conversations: ConversationTurn[]
-);
-```
-
-**Returns:** Formatted string for LLM context
-
-#### `clearUserMemory()`
-```typescript
-await vectorMemory.clearUserMemory(
-  userId: string,
-  sessionId?: string
-);
-```
-
-**Action:** Deletes all conversations for user
-
-#### `getStats()`
-```typescript
-const stats = await vectorMemory.getStats(
-  userId: string,
-  sessionId?: string
-);
-```
-
-**Returns:** `{ totalConversations, userId, sessionId }`
-
-### Deduplication Logic
+Change in both `lib/vectorMemory.ts`, `lib/customMemory.ts`, and `lib/vectorstore.ts`:
 
 ```typescript
-// Check similarity before saving
-const similarityThreshold = 0.95; // 95% similar = duplicate
-
-const existingSearch = await client.search(MEMORY_COLLECTION, {
-  vector: embedding,
-  limit: 1,
-  score_threshold: similarityThreshold,
+this.embeddings = new OllamaEmbeddings({
+  model: 'mxbai-embed-large',  // 1024d — update EMBEDDING_DIM too
+  baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
 });
-
-if (existingSearch.length > 0) {
-  console.log('Skipping duplicate conversation');
-  return;
-}
 ```
 
-### Monitoring
+Also update `EMBEDDING_DIM` constant and **delete existing collections** (dimension mismatch will cause errors):
 
 ```bash
-# List collections
-curl http://localhost:6333/collections
-
-# Get collection info
-curl http://localhost:6333/collections/conversation_memory
-
-# Count conversations
-curl http://localhost:6333/collections/conversation_memory/points/count
-
-# View conversations
-curl -X POST http://localhost:6333/collections/conversation_memory/points/scroll \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 10, "with_payload": true}'
-```
-
----
-
-## Performance Optimizations
-
-### 1. Crawler Optimizations
-
-**Resource Blocking:**
-```typescript
-// Blocks: images, media, fonts, stylesheets, scripts
-// Blocks: analytics, tracking, ads, social media
-// Blocks: .css, .jpg, .png, .gif, .svg, .woff, .ttf files
-// Result: 70% faster page loads
-```
-
-**Configuration:**
-```typescript
-const { maxPages = 15 } = options; // Increased from 5 for better coverage
-```
-
-**Speed Improvements:**
-- Uses `domcontentloaded` instead of `networkidle` (3x faster)
-- Quick scroll: 100ms intervals, 800px steps (2x faster)
-- Reduced timeouts: 30s page load, 3s DOM stability
-- Progress logging for monitoring
-
-### 2. Vector Store Optimizations
-
-**Chunk Retrieval:**
-```typescript
-k: 8, // Increased from 5 for better coverage with more pages
-```
-
-**Context Limiting:**
-```typescript
-// Max 2500 chars (increased from 2000 for better answers)
-return context.length > 2500 ? context.substring(0, 2500) + '...' : context;
-```
-
-**LLM Output Limiting:**
-```typescript
-numPredict: 300, // Limits response length for faster generation
-```
-
-### 3. Memory Optimizations
-
-**Retrieval Limits:**
-```typescript
-const relevantHistory = await vectorMemory.getRelevantHistory(userId, input, 2); // Was 3
-const recentHistory = await vectorMemory.getRecentHistory(userId, 3); // Was 5
-.slice(0, 3); // Keep only 3 (was 5)
-```
-
-**Deduplication:**
-- 95% similarity threshold
-- Skips saving duplicates
-- Reduces storage by ~40%
-
-### 4. Agent Optimizations
-
-**Prompt Leakage Detection:**
-```typescript
-function containsPromptLeakage(response: string): boolean {
-  const leakagePatterns = [
-    /You are a/i,
-    /CRITICAL RULES/i,
-    /MUST follow/i,
-    // ... more patterns
-  ];
-  return leakagePatterns.some(pattern => pattern.test(response));
-}
-```
-
-**Response Cleaning:**
-```typescript
-function cleanResponse(response: string): string {
-  // Removes system prompt fragments
-  // Returns clean user-facing response
-}
-```
-
-### Performance Metrics
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Page Load | 10s | 2-3s | 70-80% faster |
-| Pages Crawled | 1-5 | 15 | 3x more coverage |
-| Context Size | 3000 chars | 2500 chars | Optimized |
-| Memory Retrieval | 5 convs | 3 convs | 40% less |
-| Chunk Retrieval | 5 chunks | 8 chunks | Better coverage |
-| Storage | 100% | 60% | 40% savings |
-| Response Time | 30s | 10-15s | 50% faster |
-
----
-
-## Component Details
-
-### 1. Agent (`lib/agent.ts`)
-
-**Responsibilities:**
-- Load conversation history from vector memory
-- Create ReAct agent with tools
-- Stream responses
-- Detect and clean prompt leakage
-- Save conversations to vector memory
-
-**Key Features:**
-- Hybrid memory retrieval (semantic + recent)
-- Deduplication
-- Error handling
-- Logging
-
-### 2. Vector Memory (`lib/vectorMemory.ts`)
-
-**Class:** `VectorMemory`
-
-**Methods:**
-- `initialize()` - Create collection
-- `saveConversation()` - Save with deduplication
-- `getRelevantHistory()` - Semantic search
-- `getRecentHistory()` - Time-based retrieval
-- `formatHistoryForContext()` - Format for LLM
-- `clearUserMemory()` - Delete conversations
-- `getStats()` - Get statistics
-
-**Storage:**
-- Collection: `conversation_memory`
-- Embedding: nomic-embed-text (768 dims)
-- Distance: Cosine similarity
-
-### 3. Website Q&A (`lib/websiteTool.ts`)
-
-**Flow:**
-1. Check if website indexed
-2. If not: crawl → chunk → embed → store
-3. Retrieve relevant chunks
-4. Generate answer with Q&A chain
-5. Return formatted response
-
-**Optimizations:**
-- Max 10 pages per website
-- Aggressive resource blocking
-- Context limiting
-- Caching
-
-### 4. Crawler (`lib/crawler.ts`)
-
-**Features:**
-- Playwright-based
-- Resource blocking (images, scripts, etc.)
-- Progressive scrolling
-- Content deduplication
-- Domain-restricted
-
-**Blocked Resources:**
-- Images
-- Media
-- Fonts
-- Stylesheets
-- Scripts
-- Analytics
-- Tracking
-
-### 5. Q&A Chain (`lib/qa.ts`)
-
-**Components:**
-- Vector store retriever
-- Prompt template
-- LLM (qwen2.5:1.5b)
-- String output parser
-
-**Optimizations:**
-- 5 chunks (was 10)
-- 2000 char context (was 3000)
-- Markdown formatting instructions
-
-### 6. Chat UI (`app/components/Chat.tsx`)
-
-**Features:**
-- React Markdown rendering
-- Clickable links
-- Message history
-- Loading states
-- Quick suggestions
-
-**Link Rendering:**
-```typescript
-<ReactMarkdown
-  components={{
-    a: ({ node, ...props }) => (
-      <a
-        {...props}
-        className="text-blue-400 hover:text-blue-300 underline"
-        target="_blank"
-        rel="noopener noreferrer"
-      />
-    ),
-    // ... more components
-  }}
->
-  {message.text}
-</ReactMarkdown>
-```
-
----
-
-## Usage Examples
-
-### Example 1: Website Q&A with Links
-
-```
-User: What is on https://ohnohimanshu.github.io/Portfolio/
-
-Agent: This website is about **Himanshu Sharma**, an AI Engineer.
-
-**About**: Generative AI Engineer specializing in RAG pipelines
-
-**Projects**:
-- Moodify: Music recommendation app
-- Sky For: Campus weather dashboard
-
-**Contact**: 
-[himanshuxdei@gmail.com](mailto:himanshuxdei@gmail.com) | 
-[LinkedIn](https://linkedin.com/in/himanshu) | 
-[+91 9457139175](tel:+919457139175)
-```
-
-All links are clickable!
-
-### Example 2: Memory Context
-
-```
-User: "What is on example.com?"
-Agent: "Example.com is a domain used for illustrative examples..."
-[Saved to vector memory]
-
-User: "Tell me more about that website"
-Agent: [Retrieves from vector memory]
-       "Based on our previous conversation, example.com is..."
-```
-
-### Example 3: Deduplication
-
-```
-User: "What is 5+5?"
-Agent: "The result is 10"
-[Saved to vector memory]
-
-User: "What is 5+5?" (same question)
-Agent: "The result is 10"
-[Skipped - 95% similar to existing conversation]
-```
-
-### Example 4: Calculator
-
-```
-User: What is 156 * 23?
-Agent: The result of 156 * 23 is 3,588.
-```
-
-### Example 5: Current Time
-
-```
-User: What time is it?
-Agent: It is currently Sunday, March 8, 2026, 02:30 PM IST.
-```
-
----
-
-## API Reference
-
-### Agent API
-
-#### POST /api/agent
-
-**Request:**
-```json
-{
-  "message": "What is on example.com?"
-}
-```
-
-**Response:**
-```json
-{
-  "response": "Example.com is a domain used for..."
-}
-```
-
-**Error Response:**
-```json
-{
-  "error": "Error message"
-}
-```
-
-#### GET /api/agent
-
-Health check endpoint.
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "message": "Agent API is running"
-}
-```
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` | Yes |
-| `OLLAMA_MODEL` | Model name | `qwen2.5:1.5b` | Yes |
-| `QDRANT_URL` | Qdrant server URL | `http://localhost:6333` | Yes |
-
-### Adjust Memory Limits
-
-In `lib/agent.ts`:
-```typescript
-// Semantic search
-const relevantHistory = await vectorMemory.getRelevantHistory(userId, input, 2);
-// Change 2 to 3 or 5 for more context
-
-// Recent history
-const recentHistory = await vectorMemory.getRecentHistory(userId, 3);
-// Change 3 to 5 or 10 for more context
-
-// Total context
-.slice(0, 3);
-// Change 3 to 5 for more context
-```
-
-### Adjust Crawling
-
-In `lib/websiteTool.ts`:
-```typescript
-const pages = await crawlWebsite(fullUrl, { maxPages: 15 });
-// Change to 5 for faster, 30 for more thorough
-```
-
-In `lib/crawler.ts`:
-```typescript
-// Adjust page load strategy
-await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-// Use 'networkidle' for slower but more complete loading
-
-// Adjust scroll speed
-const step = 800; // Pixels per scroll
-const interval = 100; // Milliseconds between scrolls
-// Increase interval for slower scrolling, decrease for faster
-```
-
-### Adjust Chunk Retrieval
-
-In `lib/qa.ts`:
-```typescript
-k: 8, // Number of chunks
-// Change to 5 for faster, 15 for more context
-```
-
-### Adjust Response Length
-
-In `lib/qa.ts`:
-```typescript
-numPredict: 300, // Limit output tokens
-// Change to 200 for shorter, 500 for longer responses
-```
-
-In `lib/agent.ts`:
-```typescript
-numPredict: 400, // Limit agent output tokens
-// Change to 300 for shorter, 600 for longer responses
-```
-
-### Adjust Context Size
-
-In `lib/qa.ts`:
-```typescript
-return context.length > 2500 ? context.substring(0, 2500) + '...' : context;
-// Change 2500 to 2000 for faster, 3500 for more context
-```
-
-### Adjust Deduplication Threshold
-
-In `lib/vectorMemory.ts`:
-```typescript
-const similarityThreshold = 0.95; // 95% similar = duplicate
-// Change to 0.90 for stricter, 0.98 for looser
-```
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. "Cannot read properties of undefined"
-
-**Cause:** Using `this.` with standalone functions
-
-**Solution:** Already fixed - functions are standalone
-
-**Verify:**
-```bash
-npm run dev
-# Should start without errors
-```
-
-#### 2. "fetch failed" / Timeout
-
-**Cause:** Too much context for LLM
-
-**Solution:** Already optimized
-- Context limited to 2000 chars
-- Only 5 chunks retrieved
-- Only 3 conversations in memory
-
-**If still slow:**
-```typescript
-// In lib/qa.ts
-k: 3, // Reduce from 5
-return context.length > 1500 ? ... // Reduce from 2000
-```
-
-#### 3. Memory Not Working
-
-**Check Qdrant:**
-```bash
-curl http://localhost:6333
-```
-
-**Restart Qdrant:**
-```bash
-docker restart $(docker ps -q --filter ancestor=qdrant/qdrant)
-```
-
-**Verify Collection:**
-```bash
-curl http://localhost:6333/collections/conversation_memory
-```
-
-#### 4. Links Not Clickable
-
-**Check:**
-1. `react-markdown` installed: `npm install`
-2. Using latest code
-3. Message is from assistant (not user)
-
-**Verify:**
-```bash
-npm list react-markdown
-# Should show version 9.1.0 or higher
-```
-
-#### 5. Slow Responses
-
-**First Query:** 15-45 seconds (crawling 15 pages + indexing)
-**Subsequent Queries:** 5-10 seconds (uses cache, generates answer)
-
-**Speed up crawling:**
-```typescript
-// In lib/websiteTool.ts
-const pages = await crawlWebsite(fullUrl, { maxPages: 5 });
-// Reduce to 5 pages for 3x faster crawling
-```
-
-**Speed up response generation:**
-```typescript
-// In lib/qa.ts
-numPredict: 200, // Reduce from 300 for faster responses
-k: 5, // Reduce from 8 for less context processing
-```
-
-**Monitor progress:**
-- Check console logs for "[Crawler] Progress: X/15 pages crawled"
-- Each page takes ~2-3 seconds to crawl
-- Total crawl time = pages × 2-3 seconds
-
-#### 6. Duplicate Conversations
-
-**Check threshold:**
-```typescript
-// In lib/vectorMemory.ts
-const similarityThreshold = 0.95;
-// Increase to 0.98 for stricter deduplication
-```
-
-#### 7. Only Crawling 1 Page
-
-**Cause:** Website might be a single-page application or has no internal links
-
-**Check logs:**
-```
-[Crawler] Starting crawl of https://example.com (max 15 pages)
-Crawling: https://example.com
-[Crawler] Progress: 1/15 pages crawled
-[Website Q&A] Crawled 1 pages
-```
-
-**Solutions:**
-
-1. **Check if website has multiple pages:**
-   - Visit the website manually
-   - Look for navigation links
-   - Some portfolios are single-page by design
-
-2. **Verify link extraction:**
-   - Check browser console for errors
-   - Ensure links are `<a href="...">` tags
-   - Some sites use JavaScript navigation
-
-3. **Increase timeout:**
-```typescript
-// In lib/crawler.ts
-await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-// Increase from 30000 to 60000 for slower sites
-```
-
-4. **Check domain matching:**
-   - Crawler only follows links on same domain
-   - External links are ignored
-   - Subdomains might be treated as different domains
-
-**Debug:**
-```typescript
-// Add to lib/crawler.ts after link extraction
-console.log(`[Crawler] Found ${links.length} links on ${cleanUrl}`);
-console.log(`[Crawler] Queue size: ${queue.length}`);
-```
-
-### Debug Commands
-
-```bash
-# Check Ollama
-ollama list
-ollama ps
-
-# Check Qdrant
-curl http://localhost:6333/collections
-
-# Check memory
-curl http://localhost:6333/collections/conversation_memory/points/count
-
-# Check website cache
-curl http://localhost:6333/collections/website_chunks/points/count
-
-# Clear memory
 curl -X DELETE http://localhost:6333/collections/conversation_memory
-
-# Clear website cache
+curl -X DELETE http://localhost:6333/collections/user_custom_memory
 curl -X DELETE http://localhost:6333/collections/website_chunks
 ```
 
-### Quick Reset
+---
 
-```bash
-# Stop everything
-pkill ollama
-docker stop $(docker ps -q)
+## 18. Environment Variables Reference
 
-# Clear caches
-rm -rf node_modules .next
-npm install
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OLLAMA_BASE_URL` | Yes | `http://localhost:11434` | Ollama server base URL |
+| `OLLAMA_MODEL` | Yes | `qwen2.5:1.5b` | Model used for LLM inference and Q&A |
+| `QDRANT_URL` | Yes | `http://localhost:6333` | Qdrant REST API URL |
+| `LANGCHAIN_TRACING_V2` | No | — | Set to `true` to enable LangSmith tracing |
+| `LANGCHAIN_API_KEY` | No | — | LangSmith API key |
+| `LANGCHAIN_PROJECT` | No | — | LangSmith project name |
 
-# Restart services
-ollama serve &
-docker run -p 6333:6333 -d qdrant/qdrant
-
-# Pull models
-ollama pull qwen2.5:1.5b
-ollama pull nomic-embed-text
-
-# Start
-npm run dev
-```
+The embedding model (`nomic-embed-text`) is hardcoded in the three memory/vectorstore files and pulled separately via `ollama pull nomic-embed-text`. It is not configurable via environment variable without code changes.
 
 ---
 
-## Deployment
-
-### Vercel (Frontend Only)
-
-```bash
-npm i -g vercel
-vercel
-```
-
-**Note:** Host Ollama and Qdrant separately.
-
-**Environment Variables in Vercel:**
-- `OLLAMA_BASE_URL` - Your Ollama server URL
-- `OLLAMA_MODEL` - Model name
-- `QDRANT_URL` - Your Qdrant server URL
-
-### Docker
-
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npm run build
-CMD ["npm", "start"]
-```
-
-```bash
-docker build -t scribe-nova .
-docker run -p 3000:3000 scribe-nova
-```
-
-### Production Checklist
-
-- [ ] Set up external Ollama server
-- [ ] Set up external Qdrant server
-- [ ] Configure environment variables
-- [ ] Enable HTTPS
-- [ ] Add rate limiting
-- [ ] Set up monitoring
-- [ ] Configure logging
-- [ ] Add error tracking (Sentry)
-- [ ] Implement user authentication
-- [ ] Set up backups for Qdrant
-
----
-
-## Summary
-
-✅ **Vector-based persistent memory** - Survives restarts  
-✅ **Semantic search** - Finds relevant conversations  
-✅ **Deduplication** - Avoids redundant storage  
-✅ **Performance optimized** - 70% faster page loads  
-✅ **Markdown rendering** - Clickable links  
-✅ **Prompt leakage protection** - Clean responses  
-✅ **Production-ready** - Optimized for real-world use  
-
-**Quick Start:**
-```bash
-npm install
-npm run dev
-```
-
-**Try it:**
-```
-User: "What is on example.com?"
-Agent: [Provides answer with clickable links]
-
-User: "Tell me more"
-Agent: [Recalls from vector memory]
-```
-
----
-
-**Built with ❤️ using Next.js, LangChain, Ollama, and Qdrant**
+*Last updated: March 2026*

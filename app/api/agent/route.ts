@@ -3,7 +3,7 @@ import { runAgent } from '@/lib/agent';
 
 export async function POST(request: NextRequest) {
   try {
-    const { message } = await request.json();
+    const { message, botName, botDescription } = await request.json();
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -12,12 +12,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Run the agent
-    // const response = await runAgent(message);
-    const response = await runAgent(message, "default-user");
+    const response = await runAgent(
+      message,
+      "default-user",
+      botName || "ScribeNova",
+      botDescription || "Your intelligent AI assistant"
+    );
 
     return NextResponse.json({ response });
-    
+
   } catch (error) {
     console.error('API Error:', error);
     return NextResponse.json(
