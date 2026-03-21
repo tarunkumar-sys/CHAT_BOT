@@ -160,8 +160,8 @@ scribe-nova/
 ### 1 — Clone & install
 
 ```bash
-git clone https://github.com/your-username/scribe-nova.git
-cd scribe-nova
+git clone https://github.com/tarunkumar-sys/CHAT_BOT.git
+cd CHAT_BOT
 npm install
 ```
 
