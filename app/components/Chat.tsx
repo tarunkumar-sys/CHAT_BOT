@@ -6,7 +6,8 @@ import {
   PanelLeft, Trash2, Globe, Brain, X, ChevronRight,
   CheckCircle, AlertCircle, Sparkles, BookOpen, ChevronDown,
   ImageIcon, Download, Film, Blend, ScanSearch, CircleOff,
-  Layers, Sunset, UserSearch, PenTool, Wand2
+  Layers, Sunset, UserSearch, PenTool, Wand2, SplitSquareVertical,
+  ChevronLast, GripVertical
 } from 'lucide-react';
 import { KiroAvatar, type KiroExpression } from './KiroMascot';
 import ReactMarkdown from 'react-markdown';
@@ -20,6 +21,8 @@ interface Message {
   timestamp: Date;
   imageSrc?: string;
   imageToolId?: ImageToolId;
+  /** For chained tools: ordered list of tool IDs to apply sequentially */
+  toolChain?: ImageToolId[];
 }
 
 interface MemoryFact {
@@ -190,41 +193,132 @@ function ImageToolPicker({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   PROCESSED IMAGE BUBBLE
-   Key fix: processImage() returns a dataURL string, not a canvas ref.
-   We store it in state and render as <img>. This is 100% reliable
-   across React re-renders — no canvas content loss.
+   BEFORE/AFTER SLIDER
+   Drag the divider to reveal original vs processed side-by-side.
    ═══════════════════════════════════════════════════════════ */
-function ProcessedImageBubble({ message }: { message: Message }) {
+function BeforeAfterSlider({ original, processed }: { original: string; processed: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [pct, setPct]       = useState(50);   // 0–100
+  const dragging            = useRef(false);
+
+  function calcPct(clientX: number) {
+    if (!containerRef.current) return;
+    const { left, width } = containerRef.current.getBoundingClientRect();
+    const raw = ((clientX - left) / width) * 100;
+    setPct(Math.min(98, Math.max(2, raw)));
+  }
+
+  const onMouseDown = (e: React.MouseEvent) => { dragging.current = true; e.preventDefault(); };
+  useEffect(() => {
+    const move = (e: MouseEvent)  => { if (dragging.current) calcPct(e.clientX); };
+    const up   = ()               => { dragging.current = false; };
+    const tmove = (e: TouchEvent) => { if (dragging.current) calcPct(e.touches[0].clientX); };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup',   up);
+    window.addEventListener('touchmove', tmove);
+    window.addEventListener('touchend',  up);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup',   up);
+      window.removeEventListener('touchmove', tmove);
+      window.removeEventListener('touchend',  up);
+    };
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative select-none overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100 cursor-col-resize"
+      style={{ userSelect: 'none' }}
+    >
+      {/* Processed (bottom layer — full width) */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={processed} alt="processed" className="block w-full" draggable={false} />
+
+      {/* Original (top layer — clipped to left side) */}
+      <div
+        className="absolute inset-0 overflow-hidden"
+        style={{ width: `${pct}%` }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={original} alt="original" className="block" draggable={false}
+          style={{ width: containerRef.current?.offsetWidth ?? 'auto', maxWidth: 'none' }}
+        />
+      </div>
+
+      {/* Divider line */}
+      <div
+        className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.18)]"
+        style={{ left: `${pct}%`, transform: 'translateX(-50%)' }}
+      />
+
+      {/* Handle */}
+      <div
+        onMouseDown={onMouseDown}
+        onTouchStart={(e) => { dragging.current = true; e.preventDefault(); }}
+        className="
+          absolute top-1/2 -translate-y-1/2 -translate-x-1/2
+          w-8 h-8 rounded-full bg-white shadow-lg border border-stone-200
+          flex items-center justify-center cursor-col-resize
+          hover:scale-110 transition-transform duration-150
+        "
+        style={{ left: `${pct}%` }}
+      >
+        <GripVertical className="w-4 h-4 text-stone-500" />
+      </div>
+
+      {/* Labels */}
+      <span className="absolute top-2 left-2 text-[10px] font-semibold bg-black/40 text-white px-2 py-0.5 rounded-full backdrop-blur-sm">Before</span>
+      <span className="absolute top-2 right-2 text-[10px] font-semibold bg-black/40 text-white px-2 py-0.5 rounded-full backdrop-blur-sm">After</span>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PROCESSED IMAGE BUBBLE — with Before/After slider
+   Supports single toolId OR toolChain (sequential processing).
+   ═══════════════════════════════════════════════════════════ */
+function ProcessedImageBubble({
+  message,
+  onReuseResult,
+}: {
+  message: Message;
+  onReuseResult?: (dataUrl: string) => void;
+}) {
   const [resultUrl, setResultUrl]   = useState<string | null>(null);
   const [processing, setProcessing] = useState(true);
   const [error, setError]           = useState('');
-  const [progress, setProgress]     = useState<string>('Loading OpenCV…');
+  const [progress, setProgress]     = useState<string>('Loading…');
+  const [viewMode, setViewMode]     = useState<'slider' | 'result'>('slider');
+
+  // Resolve the chain — either a single tool or multiple
+  const chain: ImageToolId[] = message.toolChain
+    ? message.toolChain
+    : message.imageToolId
+      ? [message.imageToolId]
+      : [];
 
   useEffect(() => {
-    if (!message.imageSrc || !message.imageToolId) return;
-
+    if (!message.imageSrc || chain.length === 0) return;
     let cancelled = false;
     setProcessing(true);
     setResultUrl(null);
     setError('');
 
-    const tool = IMAGE_TOOLS.find(t => t.id === message.imageToolId);
-    setProgress(`Applying ${tool?.name ?? 'filter'}…`);
-
-    processImage(message.imageToolId, message.imageSrc)
-      .then(url => {
-        if (!cancelled) {
-          setResultUrl(url);
-          setProgress('Done');
-        }
-      })
-      .catch(e => {
-        if (!cancelled) setError(e?.message ?? String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setProcessing(false);
-      });
+    (async () => {
+      let current = message.imageSrc!;
+      for (let i = 0; i < chain.length; i++) {
+        const tid  = chain[i];
+        const tool = IMAGE_TOOLS.find(t => t.id === tid);
+        if (!cancelled) setProgress(`Step ${i + 1}/${chain.length}: ${tool?.name ?? tid}…`);
+        current = await processImage(tid, current);
+        if (cancelled) return;
+      }
+      setResultUrl(current);
+      setProgress('Done');
+    })()
+      .catch(e  => { if (!cancelled) setError(e?.message ?? String(e)); })
+      .finally(() => { if (!cancelled) setProcessing(false); });
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,28 +328,57 @@ function ProcessedImageBubble({ message }: { message: Message }) {
     if (!resultUrl) return;
     const a = document.createElement('a');
     a.href     = resultUrl;
-    a.download = `${message.imageToolId ?? 'processed'}.png`;
+    a.download = `${chain.join('_') || 'processed'}.png`;
     a.click();
   }
 
-  const tool = IMAGE_TOOLS.find(t => t.id === message.imageToolId);
-  const Icon = tool ? (TOOL_ICONS[tool.icon] ?? Wand2) : Wand2;
+  const firstTool = IMAGE_TOOLS.find(t => t.id === chain[0]);
+  const Icon = firstTool ? (TOOL_ICONS[firstTool.icon] ?? Wand2) : Wand2;
+  const label = chain.length > 1
+    ? chain.map(id => IMAGE_TOOLS.find(t => t.id === id)?.name ?? id).join(' → ')
+    : (firstTool?.name ?? 'Processing');
 
   return (
-    <div className="space-y-2.5 min-w-[240px]">
-      {/* Tool label */}
-      <div className="flex items-center gap-1.5 text-xs text-stone-500 font-medium">
-        <Icon className="w-3.5 h-3.5 text-stone-400" />
-        <span>{tool?.name ?? 'Processing'} applied</span>
+    <div className="space-y-2.5 min-w-[260px]">
+      {/* Tool label + view toggle */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-xs text-stone-500 font-medium min-w-0">
+          <Icon className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+          <span className="truncate">{label} applied</span>
+        </div>
+        {!processing && resultUrl && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => setViewMode('slider')}
+              title="Before/After slider"
+              className={`p-1.5 rounded-lg text-xs transition-colors ${
+                viewMode === 'slider'
+                  ? 'bg-stone-900 text-white'
+                  : 'text-stone-400 hover:text-stone-700 hover:bg-stone-100'
+              }`}
+            >
+              <SplitSquareVertical className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode('result')}
+              title="Result only"
+              className={`p-1.5 rounded-lg text-xs transition-colors ${
+                viewMode === 'result'
+                  ? 'bg-stone-900 text-white'
+                  : 'text-stone-400 hover:text-stone-700 hover:bg-stone-100'
+              }`}
+            >
+              <ChevronLast className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Image / loading area */}
+      {/* Image area */}
       <div className="relative rounded-xl overflow-hidden border border-stone-200/80 bg-stone-100">
-
-        {/* ── Loading state ── */}
+        {/* Loading */}
         {processing && (
           <div className="flex flex-col items-center justify-center gap-3 py-10 px-6">
-            {/* Animated processing indicator */}
             <div className="relative w-10 h-10">
               <div className="absolute inset-0 rounded-full border-2 border-stone-200" />
               <div className="absolute inset-0 rounded-full border-2 border-stone-800 border-t-transparent animate-spin" />
@@ -267,17 +390,13 @@ function ProcessedImageBubble({ message }: { message: Message }) {
               <p className="text-xs font-medium text-stone-700">{progress}</p>
               <p className="text-[10px] text-stone-400 mt-0.5">Processing with OpenCV.js</p>
             </div>
-            {/* Progress bar shimmer */}
             <div className="w-32 h-1 bg-stone-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-stone-700 rounded-full"
-                style={{ animation: 'shimmer 1.5s ease-in-out infinite', width: '60%' }}
-              />
+              <div className="h-full bg-stone-700 rounded-full"
+                style={{ animation: 'shimmer 1.5s ease-in-out infinite', width: '60%' }} />
             </div>
           </div>
         )}
-
-        {/* ── Error state ── */}
+        {/* Error */}
         {!processing && error && (
           <div className="p-4 flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
@@ -287,32 +406,35 @@ function ProcessedImageBubble({ message }: { message: Message }) {
             </div>
           </div>
         )}
-
-        {/* ── Result image ── */}
-        {!processing && resultUrl && (
+        {/* Slider view */}
+        {!processing && resultUrl && viewMode === 'slider' && (
+          <BeforeAfterSlider original={message.imageSrc!} processed={resultUrl} />
+        )}
+        {/* Result only */}
+        {!processing && resultUrl && viewMode === 'result' && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={resultUrl}
-            alt={`${tool?.name} result`}
-            className="max-w-full block"
-            style={{ display: 'block' }}
-          />
+          <img src={resultUrl} alt="processed" className="max-w-full block" />
         )}
       </div>
 
-      {/* Download button */}
+      {/* Actions */}
       {!processing && resultUrl && (
-        <button
-          onClick={download}
-          className="
-            flex items-center gap-1.5 px-3.5 py-2 rounded-xl
-            bg-stone-900 hover:bg-stone-800 text-white
-            text-xs font-medium transition-colors shadow-sm
-          "
-        >
-          <Download className="w-3.5 h-3.5" />
-          Download PNG
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={download}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-medium transition-colors shadow-sm"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download PNG
+          </button>
+          {onReuseResult && (
+            <button onClick={() => onReuseResult(resultUrl)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-stone-300 bg-white hover:bg-stone-50 text-stone-700 text-xs font-medium transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Use as next input
+            </button>
+          )}
+        </div>
       )}
 
       <style>{`
@@ -618,6 +740,57 @@ interface InputSharedProps {
   onToolSelect: (t: ImageTool | null) => void;
   pendingImage: string | null;
   onImageSelect: (src: string | null) => void;
+  toolChain: ImageToolId[];
+  setToolChain: (c: ImageToolId[]) => void;
+}
+
+/* ─── Tool Chain Builder ───────────────────────────────── */
+function ToolChainBuilder({
+  chain, setChain, selectedTool, onToolSelect,
+}: {
+  chain: ImageToolId[];
+  setChain: (c: ImageToolId[]) => void;
+  selectedTool: ImageTool | null;
+  onToolSelect: (t: ImageTool | null) => void;
+}) {
+  function addStep() {
+    if (!selectedTool || chain.includes(selectedTool.id)) return;
+    setChain([...chain, selectedTool.id]);
+    onToolSelect(null);
+  }
+  function removeStep(id: ImageToolId) {
+    setChain(chain.filter(c => c !== id));
+  }
+
+  if (chain.length === 0) return null;
+
+  return (
+    <div className="px-4 pb-2 flex items-center gap-1.5 flex-wrap">
+      <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-wide mr-1">Chain:</span>
+      {chain.map((id, i) => {
+        const tool = IMAGE_TOOLS.find(t => t.id === id);
+        const Icon = tool ? (TOOL_ICONS[tool.icon] ?? Wand2) : Wand2;
+        return (
+          <span key={id} className="flex items-center gap-1 bg-stone-900 text-white text-[11px] font-medium px-2 py-0.5 rounded-full">
+            {i > 0 && <span className="opacity-50 text-[9px] mr-0.5">→</span>}
+            <Icon className="w-3 h-3" />
+            {tool?.name ?? id}
+            <button onClick={() => removeStep(id)} className="ml-0.5 opacity-60 hover:opacity-100 transition-opacity">
+              <X className="w-2.5 h-2.5" />
+            </button>
+          </span>
+        );
+      })}
+      {selectedTool && !chain.includes(selectedTool.id) && (
+        <button onClick={addStep}
+          className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-dashed border-stone-400 text-stone-500 hover:border-stone-700 hover:text-stone-800 transition-colors"
+        >
+          <Plus className="w-3 h-3" />
+          Add Step
+        </button>
+      )}
+    </div>
+  );
 }
 
 /* ─── Image Upload Button ────────────────────────────────── */
@@ -661,8 +834,10 @@ function ImageUploadButton({
 function LandingInput({
   input, setInput, onSubmit, isLoading, suggestions, inputRef,
   selectedImageTool, onToolSelect, pendingImage, onImageSelect,
+  toolChain, setToolChain,
 }: InputSharedProps & { suggestions: string[] }) {
-  const canSend = !isLoading && (!!input.trim() || (!!selectedImageTool && !!pendingImage));
+  const effectiveChain = toolChain.length > 0 ? toolChain : selectedImageTool ? [selectedImageTool.id] : [];
+  const canSend = !isLoading && (!!input.trim() || (effectiveChain.length > 0 && !!pendingImage));
 
   return (
     <div>
@@ -721,6 +896,8 @@ function LandingInput({
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
           </button>
         </div>
+        {/* Chain builder strip */}
+        <ToolChainBuilder chain={toolChain} setChain={setToolChain} selectedTool={selectedImageTool} onToolSelect={onToolSelect} />
       </div>
 
       <div className="flex gap-2 mt-3 flex-wrap justify-center">
@@ -739,8 +916,10 @@ function LandingInput({
 function ChatInput({
   input, setInput, onSubmit, isLoading, inputRef,
   selectedImageTool, onToolSelect, pendingImage, onImageSelect,
+  toolChain, setToolChain,
 }: InputSharedProps) {
-  const canSend = !isLoading && (!!input.trim() || (!!selectedImageTool && !!pendingImage));
+  const effectiveChain = toolChain.length > 0 ? toolChain : selectedImageTool ? [selectedImageTool.id] : [];
+  const canSend = !isLoading && (!!input.trim() || (effectiveChain.length > 0 && !!pendingImage));
 
   return (
     <div className="bg-white rounded-2xl border border-stone-200/80 shadow-sm">
@@ -792,6 +971,8 @@ function ChatInput({
           {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
         </button>
       </div>
+      {/* Chain builder strip */}
+      <ToolChainBuilder chain={toolChain} setChain={setToolChain} selectedTool={selectedImageTool} onToolSelect={onToolSelect} />
     </div>
   );
 }
@@ -817,6 +998,19 @@ export default function Chat() {
 
   const [selectedImageTool, setSelectedImageTool] = useState<ImageTool | null>(null);
   const [pendingImage,       setPendingImage]       = useState<string | null>(null);
+  const [toolChain,          setToolChain]          = useState<ImageToolId[]>([]);
+  const [isDragOver,         setIsDragOver]         = useState(false);
+
+  // ── Drag-and-drop image handler ──
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = Array.from(e.dataTransfer.files).find(f => f.type.startsWith('image/'));
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setPendingImage(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  }
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [messages]);
@@ -841,26 +1035,36 @@ export default function Chat() {
     const msg = (text || input).trim();
 
     // ── Image tool path (no LLM needed) ──
-    if (selectedImageTool && pendingImage) {
+    const effectiveChain = toolChain.length > 0 ? toolChain
+      : selectedImageTool ? [selectedImageTool.id] : [];
+
+    if (effectiveChain.length > 0 && pendingImage) {
+      const chainLabel = effectiveChain
+        .map(id => IMAGE_TOOLS.find(t => t.id === id)?.name ?? id)
+        .join(' → ');
       const userMsg: Message = {
         id: Date.now().toString(),
-        text: msg || `Apply ${selectedImageTool.name}`,
+        text: msg || `Apply ${chainLabel}`,
         sender: 'user',
         timestamp: new Date(),
-        imageSrc:    pendingImage,
-        imageToolId: selectedImageTool.id,
+        imageSrc: pendingImage,
+        imageToolId: effectiveChain[0],
+        toolChain: effectiveChain,
       };
       const botMsg: Message = {
         id: (Date.now() + 1).toString(),
         text: '',
         sender: 'assistant',
         timestamp: new Date(),
-        imageSrc:    pendingImage,
-        imageToolId: selectedImageTool.id,
+        imageSrc: pendingImage,
+        imageToolId: effectiveChain[0],
+        toolChain: effectiveChain,
       };
       setMessages(prev => [...prev, userMsg, botMsg]);
       setInput('');
       setPendingImage(null);
+      setToolChain([]);
+      setSelectedImageTool(null);
       return;
     }
 
@@ -908,7 +1112,7 @@ export default function Chat() {
       setIsLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, isLoading, selectedImageTool, pendingImage, botConfig]);
+  }, [input, isLoading, selectedImageTool, pendingImage, botConfig, toolChain]);
 
   const suggestions = [
     "What can you do?",
@@ -928,6 +1132,8 @@ export default function Chat() {
     onToolSelect: setSelectedImageTool,
     pendingImage,
     onImageSelect: setPendingImage,
+    toolChain,
+    setToolChain,
   };
 
   return (
@@ -969,7 +1175,20 @@ export default function Chat() {
         </aside>
 
         {/* ── Main ── */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden"
+          onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
+          onDragLeave={() => setIsDragOver(false)}
+          onDrop={handleDrop}
+        >
+          {/* Drag-over overlay */}
+          {isDragOver && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center bg-stone-900/20 backdrop-blur-sm pointer-events-none">
+              <div className="bg-white rounded-2xl px-8 py-6 flex flex-col items-center gap-3 shadow-2xl border border-stone-200">
+                <ImageIcon className="w-10 h-10 text-stone-400" />
+                <p className="text-sm font-semibold text-stone-700">Drop image to upload</p>
+              </div>
+            </div>
+          )}
 
           {/* Top Bar */}
           <header className="flex items-center px-4 py-3 gap-3">
@@ -1033,8 +1252,15 @@ export default function Chat() {
                           : 'bg-white border border-stone-200/80 text-stone-800 rounded-tl-sm shadow-sm'
                       }`}>
                         {message.sender === 'assistant' ? (
-                          message.imageToolId ? (
-                            <ProcessedImageBubble message={message} />
+                          (message.imageToolId || message.toolChain) ? (
+                            <ProcessedImageBubble
+                              message={message}
+                              onReuseResult={(url) => {
+                                setPendingImage(url);
+                                setToolChain([]);
+                                setSelectedImageTool(null);
+                              }}
+                            />
                           ) : (
                             <div className="prose prose-sm max-w-none prose-stone">
                               <ReactMarkdown
