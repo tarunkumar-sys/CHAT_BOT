@@ -1,21 +1,18 @@
 /**
  * imageProcessing.ts
  *
- * - face_detection  → pure TypeScript Viola-Jones (no OpenCV, no CORS)
  * - sepia           → Canvas 2D pixel loop (no OpenCV)
  * - everything else → OpenCV.js (lazy-loaded from CDN)
  *
  * processImage(toolId, imageSrc) always returns a PNG dataURL.
  */
 
-import { getHaarCascadeXML } from './faceModelData';
-import { detectAndDraw }     from './violaJonesDetector';
 
 /* ─── Tool definitions ───────────────────────────────────── */
 export type ImageToolId =
   | 'grayscale' | 'gaussian_blur' | 'edge_detection'
   | 'threshold' | 'sharpen' | 'emboss' | 'sepia'
-  | 'face_detection' | 'contour_detect';
+  | 'contour_detect';
 
 export interface ImageTool {
   id: ImageToolId;
@@ -33,7 +30,6 @@ export const IMAGE_TOOLS: ImageTool[] = [
   { id: 'sharpen',        icon: 'Sparkles',   name: 'Sharpen',        description: 'Enhance fine details',          section: 'Filters'   },
   { id: 'emboss',         icon: 'Layers',     name: 'Emboss',         description: '3D relief effect',              section: 'Filters'   },
   { id: 'sepia',          icon: 'Sunset',     name: 'Sepia Tone',     description: 'Warm vintage brown tint',       section: 'Filters'   },
-  { id: 'face_detection', icon: 'UserSearch', name: 'Face Detection', description: 'Detect and box all faces',      section: 'Detection' },
   { id: 'contour_detect', icon: 'PenTool',    name: 'Contour Detect', description: 'Find and draw object contours', section: 'Detection' },
 ];
 
@@ -82,11 +78,6 @@ export async function processImage(
   imageSrc: string,
 ): Promise<string> {
 
-  /* ── Face detection: pure TS, zero OpenCV ── */
-  if (toolId === 'face_detection') {
-    const xml = await getHaarCascadeXML();
-    return detectAndDraw(imageSrc, xml);
-  }
 
   /* ── Sepia: Canvas 2D pixel loop ── */
   if (toolId === 'sepia') {

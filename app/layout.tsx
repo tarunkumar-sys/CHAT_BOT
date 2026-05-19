@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AI Agent - TinyLlama & LangChain",
+  title: "AI Agent - Lumi",
   description: "A minimalist AI agent with multiple tools",
 };
 

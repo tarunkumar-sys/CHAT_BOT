@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     const response = await runAgent(
       message,
       "default-user",
-      botName || "ScribeNova",
+      botName || "Lumi",
       botDescription || "Your intelligent AI assistant"
     );
 

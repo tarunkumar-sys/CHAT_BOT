@@ -1,12 +1,9 @@
 import { QdrantVectorStore } from '@langchain/qdrant';
-import { OllamaEmbeddings } from '@langchain/ollama';
-import { ChatOllama } from '@langchain/ollama';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { RunnableSequence } from '@langchain/core/runnables';
-import { getQdrantClient, resolveWebsiteDomain } from './vectorstore';
-
-const COLLECTION_NAME = 'website_chunks';
+import { getQdrantClient, resolveWebsiteDomain, getCollectionName } from './vectorstore';
+import { getLLM, getEmbeddings } from './llm';
 
 export async function getQaChain(websiteUrlOrName: string) {
   // Resolve to stored domain (handles partial names + full URLs)
@@ -24,15 +21,13 @@ export async function getQaChain(websiteUrlOrName: string) {
     domain = websiteUrlOrName.replace(/[\.\-\/\:]/g, '_').toLowerCase();
   }
 
-  const embeddings = new OllamaEmbeddings({
-    model: 'nomic-embed-text',
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-  });
-
+  const embeddings = getEmbeddings();
   const client = getQdrantClient();
+  const collectionName = await getCollectionName();
+
   const vectorStore = new QdrantVectorStore(embeddings, {
     client,
-    collectionName: COLLECTION_NAME,
+    collectionName: collectionName,
   });
 
   const retriever = vectorStore.asRetriever({
@@ -42,12 +37,7 @@ export async function getQaChain(websiteUrlOrName: string) {
     },
   });
 
-  const llm = new ChatOllama({
-    model: process.env.OLLAMA_MODEL || 'qwen2.5:1.5b',
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-    temperature: 0,
-    numPredict: 600,
-  });
+  const llm = getLLM({ numPredict: 600 });
 
   const prompt = PromptTemplate.fromTemplate(`You are a website content analyst. Your job is to answer questions about website content using ONLY the provided context chunks. Format responses beautifully using markdown.
 

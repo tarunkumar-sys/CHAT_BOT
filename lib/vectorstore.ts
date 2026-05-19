@@ -1,9 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { QdrantVectorStore } from '@langchain/qdrant';
-import { OllamaEmbeddings } from '@langchain/ollama';
-
-const COLLECTION_NAME = 'website_chunks';
-const EMBEDDING_DIM = 768; // nomic-embed-text
+import { getEmbeddings, getVectorDimension } from './llm';
 
 export function getQdrantClient() {
   return new QdrantClient({
@@ -11,25 +8,29 @@ export function getQdrantClient() {
   });
 }
 
+export async function getCollectionName() {
+  const dim = await getVectorDimension();
+  return `website_chunks_${dim}`;
+}
+
 export async function createVectorstore(chunks: string[], websiteUrl: string) {
   const domain = new URL(websiteUrl).hostname.replace(/\./g, '_');
   const client = getQdrantClient();
+  const collectionName = await getCollectionName();
 
   // Check if collection exists, create if not
   const collections = await client.getCollections();
-  if (!collections.collections.some(c => c.name === COLLECTION_NAME)) {
-    await client.createCollection(COLLECTION_NAME, {
+  if (!collections.collections.some(c => c.name === collectionName)) {
+    const dim = await getVectorDimension();
+    await client.createCollection(collectionName, {
       vectors: {
-        size: EMBEDDING_DIM,
+        size: dim,
         distance: 'Cosine',
       },
     });
   }
 
-  const embeddings = new OllamaEmbeddings({
-    model: 'nomic-embed-text',
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-  });
+  const embeddings = getEmbeddings();
 
   const metadatas = chunks.map(() => ({
     source: websiteUrl,
@@ -42,7 +43,7 @@ export async function createVectorstore(chunks: string[], websiteUrl: string) {
     embeddings,
     {
       client,
-      collectionName: COLLECTION_NAME,
+      collectionName: collectionName,
     }
   );
 
@@ -51,8 +52,9 @@ export async function createVectorstore(chunks: string[], websiteUrl: string) {
 
 export async function resolveWebsiteDomain(nameOrUrl: string): Promise<string | null> {
   const client = getQdrantClient();
+  const collectionName = await getCollectionName();
   try {
-    const result = await client.scroll(COLLECTION_NAME, {
+    const result = await client.scroll(collectionName, {
       limit: 200,
       with_payload: true,
     });

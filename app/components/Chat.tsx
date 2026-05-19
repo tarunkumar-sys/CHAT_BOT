@@ -6,8 +6,8 @@ import {
   PanelLeft, Trash2, Globe, Brain, X, ChevronRight,
   CheckCircle, AlertCircle, Sparkles, BookOpen, ChevronDown,
   ImageIcon, Download, Film, Blend, ScanSearch, CircleOff,
-  Layers, Sunset, UserSearch, PenTool, Wand2, SplitSquareVertical,
-  ChevronLast, GripVertical
+  Layers, Sunset, PenTool, Wand2, SplitSquareVertical,
+  ChevronLast, GripVertical, ThumbsUp, ThumbsDown, Copy, Check
 } from 'lucide-react';
 import { KiroAvatar, type KiroExpression } from './KiroMascot';
 import ReactMarkdown from 'react-markdown';
@@ -39,7 +39,7 @@ interface BotConfig {
 /* ─── Tool icon map ──────────────────────────────────────── */
 const TOOL_ICONS: Record<string, React.ElementType> = {
   Film, Blend, ScanSearch, CircleOff, Sparkles,
-  Layers, Sunset, UserSearch, PenTool,
+  Layers, Sunset, PenTool,
 };
 
 const SECTIONS: Array<ImageTool['section']> = ['Basic', 'Filters', 'Detection'];
@@ -199,6 +199,7 @@ function ImageToolPicker({
 function BeforeAfterSlider({ original, processed }: { original: string; processed: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pct, setPct]       = useState(50);   // 0–100
+  const [width, setWidth]   = useState(0);
   const dragging            = useRef(false);
 
   function calcPct(clientX: number) {
@@ -217,6 +218,24 @@ function BeforeAfterSlider({ original, processed }: { original: string; processe
     window.addEventListener('mouseup',   up);
     window.addEventListener('touchmove', tmove);
     window.addEventListener('touchend',  up);
+
+    if (containerRef.current) {
+      setWidth(containerRef.current.offsetWidth);
+      const observer = new ResizeObserver((entries) => {
+        for (let entry of entries) {
+          setWidth(entry.contentRect.width);
+        }
+      });
+      observer.observe(containerRef.current);
+      return () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup',   up);
+        window.removeEventListener('touchmove', tmove);
+        window.removeEventListener('touchend',  up);
+        observer.disconnect();
+      };
+    }
+
     return () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup',   up);
@@ -242,7 +261,7 @@ function BeforeAfterSlider({ original, processed }: { original: string; processe
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={original} alt="original" className="block" draggable={false}
-          style={{ width: containerRef.current?.offsetWidth ?? 'auto', maxWidth: 'none' }}
+          style={{ width: width || '100%', maxWidth: 'none' }}
         />
       </div>
 
@@ -570,7 +589,7 @@ function SettingsModal({
   }
 
   function saveGeneral() {
-    setBotConfig({ name: localName || 'ScribeNova', description: localDesc });
+    setBotConfig({ name: localName || 'Lumi', description: localDesc });
     setSaveMsg('Settings saved!');
     setTimeout(() => setSaveMsg(''), 2000);
   }
@@ -586,7 +605,7 @@ function SettingsModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/25 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg mx-4 bg-[#F5F3F0] rounded-2xl shadow-2xl overflow-hidden border border-stone-200/80">
+      <div className="relative z-10 w-[calc(100%-32px)] max-w-lg bg-[#F5F3F0] rounded-2xl shadow-2xl border border-stone-200/80 max-h-[90vh] flex flex-col overflow-hidden">
 
         <div className="px-6 pt-6 pb-4 flex items-center justify-between border-b border-stone-200/60">
           <div className="flex items-center gap-2.5">
@@ -603,7 +622,7 @@ function SettingsModal({
           </button>
         </div>
 
-        <div className="px-6 pt-3 flex gap-1">
+        <div className="px-6 pt-3 flex flex-wrap gap-1">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
@@ -615,12 +634,12 @@ function SettingsModal({
           ))}
         </div>
 
-        <div className="px-6 py-5 min-h-[320px]">
+        <div className="px-6 py-5 min-h-[320px] overflow-y-auto no-scrollbar flex-1">
           {tab === 'general' && (
             <div className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-stone-700 mb-1.5 uppercase tracking-wide">Bot Name</label>
-                <input value={localName} onChange={e => setLocalName(e.target.value)} placeholder="e.g. ScribeNova"
+                <input value={localName} onChange={e => setLocalName(e.target.value)} placeholder="e.g. Lumi"
                   className="w-full bg-white border border-stone-200 text-stone-900 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-stone-300 placeholder:text-stone-400" />
               </div>
               <div>
@@ -656,7 +675,7 @@ function SettingsModal({
                         <div key={fact.id} className="flex items-start gap-2 bg-white border border-stone-200/80 rounded-xl px-3.5 py-2.5 group">
                           <ChevronRight className="w-3.5 h-3.5 text-stone-400 mt-0.5 flex-shrink-0" />
                           <span className="text-sm text-stone-700 flex-1">{fact.text}</span>
-                          <button onClick={() => deleteFact(fact.id)} className="opacity-0 group-hover:opacity-100 text-stone-400 hover:text-red-500 transition-all">
+                          <button onClick={() => deleteFact(fact.id)} className="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-stone-400 hover:text-red-500 transition-all">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
@@ -707,7 +726,7 @@ function SettingsModal({
                               <p className="text-[10px] text-stone-400">{site.chunks} chunks indexed</p>
                             </div>
                             <button onClick={() => deleteSite(site.domain)} disabled={deletingDomain === site.domain}
-                              className="opacity-0 group-hover:opacity-100 text-stone-400 hover:text-red-500 transition-all disabled:opacity-50" title="Remove">
+                              className="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-stone-400 hover:text-red-500 transition-all disabled:opacity-50" title="Remove">
                               {deletingDomain === site.domain ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                             </button>
                           </div>
@@ -987,10 +1006,9 @@ export default function Chat() {
   const [kiroExpr, setKiroExpr]       = useState<KiroExpression>('idle');
   const [loadingExpr, setLoadingExpr] = useState<KiroExpression>('loading');
   const loadingTimersRef              = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [botConfig, setBotConfig]     = useState<BotConfig>({
-    name: 'ScribeNova',
+    name: 'Lumi',
     description: 'Your intelligent AI assistant',
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1000,6 +1018,26 @@ export default function Chat() {
   const [pendingImage,       setPendingImage]       = useState<string | null>(null);
   const [toolChain,          setToolChain]          = useState<ImageToolId[]>([]);
   const [isDragOver,         setIsDragOver]         = useState(false);
+  const [reactions, setReactions]     = useState<Record<string, 'up' | 'down'>>({});
+  const [copiedId, setCopiedId]       = useState<string | null>(null);
+
+  const handleCopy = useCallback((text: string, id: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(current => current === id ? null : current), 2000);
+    });
+  }, []);
+
+  const handleReact = useCallback((id: string, type: 'up' | 'down') => {
+    setReactions(prev => {
+      if (prev[id] === type) {
+        const copy = { ...prev };
+        delete copy[id];
+        return copy;
+      }
+      return { ...prev, [id]: type };
+    });
+  }, []);
 
   // ── Drag-and-drop image handler ──
   function handleDrop(e: React.DragEvent) {
@@ -1151,24 +1189,38 @@ export default function Chat() {
       <div className="flex h-screen bg-[#EDECEA] overflow-hidden">
 
         {/* ── Sidebar ── */}
-        <aside className={`flex flex-col border-r border-stone-300/50 bg-[#E6E3DF] transition-all duration-300 ${sidebarOpen ? 'w-[52px]' : 'w-0 overflow-hidden'}`}>
+        <aside className="flex flex-col border-r border-stone-300/50 bg-[#E6E3DF] w-[52px]">
           <div className="flex flex-col items-center py-4 gap-1 h-full">
-            <button onClick={() => setSidebarOpen(false)}
-              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors">
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors cursor-default"
+              title="Sidebar"
+              aria-label="Sidebar">
               <PanelLeft className="w-4 h-4" />
             </button>
             <div className="w-6 h-px bg-stone-300/60 my-1" />
-            <button onClick={() => setMessages([])} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors" title="New Chat">
+            <button onClick={() => setMessages([])}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors"
+              title="New Chat"
+              aria-label="New Chat">
               <Plus className="w-4 h-4" />
             </button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors" title="Conversations">
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors"
+              title="Conversations"
+              aria-label="Conversations">
               <MessageSquare className="w-4 h-4" />
             </button>
-            <button onClick={() => setSettingsOpen(true)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors" title="Memory">
+            <button onClick={() => setSettingsOpen(true)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors"
+              title="Memory"
+              aria-label="Memory">
               <Brain className="w-4 h-4" />
             </button>
             <div className="flex-1" />
-            <button onClick={() => setSettingsOpen(true)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors mb-2" title="Settings">
+            <button onClick={() => setSettingsOpen(true)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors mb-2"
+              title="Settings"
+              aria-label="Settings">
               <Settings className="w-4 h-4" />
             </button>
           </div>
@@ -1192,13 +1244,6 @@ export default function Chat() {
 
           {/* Top Bar */}
           <header className="flex items-center px-4 py-3 gap-3">
-            {!sidebarOpen && (
-              <button onClick={() => setSidebarOpen(true)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-stone-300/60 text-stone-500 hover:text-stone-800 transition-colors">
-                <PanelLeft className="w-4 h-4" />
-              </button>
-            )}
-            <span className="text-sm font-medium text-stone-600 tracking-tight">{botConfig.name}</span>
             <div className="flex-1" />
             <button onClick={() => setSettingsOpen(true)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-stone-900 text-white text-xs font-medium hover:bg-stone-800 transition-colors shadow-sm">
@@ -1211,11 +1256,11 @@ export default function Chat() {
             {!hasMessages ? (
               <div className="flex flex-col items-center justify-center h-full pb-8">
                 <div className="fade-up text-center max-w-md">
-                  <div className="w-12 h-12 rounded-2xl bg-stone-900 flex items-center justify-center mx-auto mb-6 shadow-lg">
-                    <Sparkles className="w-6 h-6 text-stone-200" />
+                  <div className="flex justify-center mb-6" style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.18))' }}>
+                    <KiroAvatar expression="idle" size={56} />
                   </div>
-                  <h1 style={{ fontFamily: "'Instrument Serif', serif" }} className="text-[2.4rem] font-normal text-stone-900 leading-tight mb-2">
-                    What can I help with?
+                  <h1 style={{ fontFamily: "'Instrument Serif', serif" }} className="text-[2rem] sm:text-[2.4rem] font-normal text-stone-900 leading-tight mb-2">
+                    What can {botConfig.name} help with?
                   </h1>
                   <p className="text-sm text-stone-500 mb-8">{botConfig.description}</p>
                 </div>
@@ -1227,7 +1272,7 @@ export default function Chat() {
               <div className="max-w-2xl mx-auto py-6 space-y-5">
                 {messages.map((message, idx) => (
                   <div key={message.id}
-                    className={`fade-up flex gap-3 ${message.sender === 'user' ? 'flex-row-reverse' : ''}`}
+                    className={`fade-up flex gap-3 group ${message.sender === 'user' ? 'flex-row-reverse' : ''}`}
                     style={{ animationDelay: `${idx * 0.03}s`, opacity: 0 }}
                   >
                     {message.sender === 'user' ? (
@@ -1285,9 +1330,47 @@ export default function Chat() {
                           </div>
                         )}
                       </div>
-                      <span className="text-[10px] text-stone-400 px-1">
-                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+                      <div className="flex items-center gap-2.5 min-h-[24px]">
+                        <span className="text-[10px] text-stone-400 px-1">
+                          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                        {message.sender === 'assistant' && !(message.imageToolId || message.toolChain) && (
+                          <div className="opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex gap-1 items-center">
+                            <button
+                              onClick={() => handleReact(message.id, 'up')}
+                              className={`p-1 rounded hover:bg-stone-200 transition-colors ${
+                                reactions[message.id] === 'up' ? 'text-emerald-600' : 'text-stone-400 hover:text-stone-600'
+                              }`}
+                              title="Thumbs Up"
+                              aria-label="Thumbs Up"
+                            >
+                              <ThumbsUp size={13} className={reactions[message.id] === 'up' ? 'fill-emerald-100' : ''} />
+                            </button>
+                            <button
+                              onClick={() => handleReact(message.id, 'down')}
+                              className={`p-1 rounded hover:bg-stone-200 transition-colors ${
+                                reactions[message.id] === 'down' ? 'text-rose-600' : 'text-stone-400 hover:text-stone-600'
+                              }`}
+                              title="Thumbs Down"
+                              aria-label="Thumbs Down"
+                            >
+                              <ThumbsDown size={13} className={reactions[message.id] === 'down' ? 'fill-rose-100' : ''} />
+                            </button>
+                            <button
+                              onClick={() => handleCopy(message.text, message.id)}
+                              className="p-1 rounded hover:bg-stone-200 text-stone-400 hover:text-stone-600 transition-colors"
+                              title="Copy Message"
+                              aria-label="Copy Message"
+                            >
+                              {copiedId === message.id ? (
+                                <Check size={13} className="text-emerald-600" />
+                              ) : (
+                                <Copy size={13} />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

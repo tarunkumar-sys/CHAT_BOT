@@ -1,9 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { OllamaEmbeddings } from '@langchain/ollama';
+import { getEmbeddings, getVectorDimension } from './llm';
 import { v4 as uuidv4 } from 'uuid';
-
-const MEMORY_COLLECTION = 'conversation_memory';
-const EMBEDDING_DIM = 768; // nomic-embed-text
 
 interface ConversationTurn {
   id: string;
@@ -16,17 +13,18 @@ interface ConversationTurn {
 
 export class VectorMemory {
   private client: QdrantClient;
-  private embeddings: OllamaEmbeddings;
+  private embeddings: any;
 
   constructor() {
     this.client = new QdrantClient({
       url: process.env.QDRANT_URL || 'http://localhost:6333',
     });
-    
-    this.embeddings = new OllamaEmbeddings({
-      model: 'nomic-embed-text',
-      baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-    });
+    this.embeddings = getEmbeddings();
+  }
+
+  async getCollectionName() {
+    const dim = await getVectorDimension();
+    return `conversation_memory_${dim}`;
   }
 
   /**
@@ -34,17 +32,19 @@ export class VectorMemory {
    */
   async initialize() {
     try {
+      const collectionName = await this.getCollectionName();
       const collections = await this.client.getCollections();
-      const exists = collections.collections.some(c => c.name === MEMORY_COLLECTION);
+      const exists = collections.collections.some(c => c.name === collectionName);
       
       if (!exists) {
-        await this.client.createCollection(MEMORY_COLLECTION, {
+        const dim = await getVectorDimension();
+        await this.client.createCollection(collectionName, {
           vectors: {
-            size: EMBEDDING_DIM,
+            size: dim,
             distance: 'Cosine',
           },
         });
-        console.log('[Vector Memory] Collection created');
+        console.log(`[Vector Memory] Collection ${collectionName} created`);
       }
     } catch (error) {
       console.error('[Vector Memory] Initialization error:', error);
@@ -62,6 +62,7 @@ export class VectorMemory {
   ) {
     try {
       await this.initialize();
+      const collectionName = await this.getCollectionName();
 
       // Check for similar existing conversation to avoid duplicates
       const similarityThreshold = 0.95; // 95% similar = duplicate
@@ -69,7 +70,7 @@ export class VectorMemory {
       const embedding = await this.embeddings.embedQuery(combinedText);
 
       // Search for very similar conversations
-      const existingSearch = await this.client.search(MEMORY_COLLECTION, {
+      const existingSearch = await this.client.search(collectionName, {
         vector: embedding,
         limit: 1,
         filter: {
@@ -91,7 +92,7 @@ export class VectorMemory {
       const timestamp = Date.now();
 
       // Store in Qdrant with metadata
-      await this.client.upsert(MEMORY_COLLECTION, {
+      await this.client.upsert(collectionName, {
         points: [
           {
             id,
@@ -125,12 +126,13 @@ export class VectorMemory {
   ): Promise<ConversationTurn[]> {
     try {
       await this.initialize();
+      const collectionName = await this.getCollectionName();
 
       // Generate embedding for current query
       const queryEmbedding = await this.embeddings.embedQuery(currentQuery);
 
       // Search for similar conversations
-      const searchResult = await this.client.search(MEMORY_COLLECTION, {
+      const searchResult = await this.client.search(collectionName, {
         vector: queryEmbedding,
         limit,
         filter: {
@@ -170,10 +172,10 @@ export class VectorMemory {
   ): Promise<ConversationTurn[]> {
     try {
       await this.initialize();
+      const collectionName = await this.getCollectionName();
 
       // Scroll through recent conversations
-      // Note: Qdrant scroll doesn't support order_by, so we get all and sort in memory
-      const scrollResult = await this.client.scroll(MEMORY_COLLECTION, {
+      const scrollResult = await this.client.scroll(collectionName, {
         filter: {
           must: [
             { key: 'userId', match: { value: userId } },
@@ -265,9 +267,10 @@ export class VectorMemory {
   async clearUserMemory(userId: string, sessionId: string = 'default-session') {
     try {
       await this.initialize();
+      const collectionName = await this.getCollectionName();
 
       // Delete all points for this user and session
-      await this.client.delete(MEMORY_COLLECTION, {
+      await this.client.delete(collectionName, {
         filter: {
           must: [
             { key: 'userId', match: { value: userId } },
@@ -288,8 +291,9 @@ export class VectorMemory {
   async getStats(userId: string, sessionId: string = 'default-session') {
     try {
       await this.initialize();
+      const collectionName = await this.getCollectionName();
 
-      const countResult = await this.client.count(MEMORY_COLLECTION, {
+      const countResult = await this.client.count(collectionName, {
         filter: {
           must: [
             { key: 'userId', match: { value: userId } },

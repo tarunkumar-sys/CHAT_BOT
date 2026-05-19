@@ -1,9 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { OllamaEmbeddings } from '@langchain/ollama';
+import { getEmbeddings, getVectorDimension } from './llm';
 import { v4 as uuidv4 } from 'uuid';
-
-const CUSTOM_MEMORY_COLLECTION = 'user_custom_memory';
-const EMBEDDING_DIM = 768; // nomic-embed-text
 
 export interface MemoryFact {
   id: string;
@@ -14,27 +11,31 @@ export interface MemoryFact {
 
 export class CustomMemory {
   private client: QdrantClient;
-  private embeddings: OllamaEmbeddings;
+  private embeddings: any;
 
   constructor() {
     this.client = new QdrantClient({
       url: process.env.QDRANT_URL || 'http://localhost:6333',
     });
-    this.embeddings = new OllamaEmbeddings({
-      model: 'nomic-embed-text',
-      baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-    });
+    this.embeddings = getEmbeddings();
+  }
+
+  async getCollectionName() {
+    const dim = await getVectorDimension();
+    return `user_custom_memory_${dim}`;
   }
 
   async initialize() {
     try {
+      const collectionName = await this.getCollectionName();
       const collections = await this.client.getCollections();
-      const exists = collections.collections.some(c => c.name === CUSTOM_MEMORY_COLLECTION);
+      const exists = collections.collections.some(c => c.name === collectionName);
       if (!exists) {
-        await this.client.createCollection(CUSTOM_MEMORY_COLLECTION, {
-          vectors: { size: EMBEDDING_DIM, distance: 'Cosine' },
+        const dim = await getVectorDimension();
+        await this.client.createCollection(collectionName, {
+          vectors: { size: dim, distance: 'Cosine' },
         });
-        console.log('[Custom Memory] Collection created');
+        console.log(`[Custom Memory] Collection ${collectionName} created`);
       }
     } catch (err) {
       console.error('[Custom Memory] Init error:', err);
@@ -44,11 +45,12 @@ export class CustomMemory {
   /** Save a new user-provided fact */
   async addFact(userId: string, text: string): Promise<MemoryFact> {
     await this.initialize();
+    const collectionName = await this.getCollectionName();
     const id = uuidv4();
     const createdAt = new Date().toISOString();
     const embedding = await this.embeddings.embedQuery(text);
 
-    await this.client.upsert(CUSTOM_MEMORY_COLLECTION, {
+    await this.client.upsert(collectionName, {
       points: [
         {
           id,
@@ -65,7 +67,8 @@ export class CustomMemory {
   /** Delete a fact by ID */
   async deleteFact(userId: string, factId: string): Promise<void> {
     await this.initialize();
-    await this.client.delete(CUSTOM_MEMORY_COLLECTION, {
+    const collectionName = await this.getCollectionName();
+    await this.client.delete(collectionName, {
       points: [factId],
     });
     console.log(`[Custom Memory] Deleted fact: ${factId}`);
@@ -74,8 +77,9 @@ export class CustomMemory {
   /** List all facts for a user */
   async listFacts(userId: string): Promise<MemoryFact[]> {
     await this.initialize();
+    const collectionName = await this.getCollectionName();
     try {
-      const result = await this.client.scroll(CUSTOM_MEMORY_COLLECTION, {
+      const result = await this.client.scroll(collectionName, {
         filter: { must: [{ key: 'userId', match: { value: userId } }] },
         limit: 200,
         with_payload: true,
@@ -97,9 +101,10 @@ export class CustomMemory {
   /** Retrieve facts relevant to a query using semantic search */
   async getRelevantFacts(userId: string, query: string, limit = 5): Promise<MemoryFact[]> {
     await this.initialize();
+    const collectionName = await this.getCollectionName();
     try {
       const embedding = await this.embeddings.embedQuery(query);
-      const results = await this.client.search(CUSTOM_MEMORY_COLLECTION, {
+      const results = await this.client.search(collectionName, {
         vector: embedding,
         limit,
         filter: { must: [{ key: 'userId', match: { value: userId } }] },

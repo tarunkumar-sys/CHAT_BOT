@@ -29,6 +29,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-, "components/MessageBubble.jsx", "app/api/agent/route.ts", "app/tools/weather.js", "app/tools/pokemon.js"  ],
+  ],
   "exclude": ["node_modules"]
 }

@@ -1,4 +1,4 @@
-import { ChatOllama } from "@langchain/ollama";
+import { getLLM } from "./llm";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { tools } from "./tools";
@@ -37,17 +37,12 @@ Response Format:
 `;
 }
 
-export const llm = new ChatOllama({
-  model: process.env.OLLAMA_MODEL || "qwen2.5:1.5b",
-  baseUrl: process.env.OLLAMA_BASE_URL || "http://localhost:11434",
-  temperature: 0,
-  numPredict: 400,
-});
+export const llm = getLLM();
 
 export async function runAgent(
   input: string,
   userId: string = "default-user",
-  botName: string = "ScribeNova",
+  botName: string = "Lumi",
   botDescription: string = "Your intelligent AI assistant"
 ) {
   console.log(`\n--- [LOG] Running agent for user: ${userId} ---`);
